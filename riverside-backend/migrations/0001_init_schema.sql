@@ -1,6 +1,7 @@
 create extension if not exists "uuid-ossp";
 create extension if not exists btree_gist;
 
+-- ── profiles ────────────────────────────────────────────────
 create type user_role as enum ('visitor', 'member', 'staff', 'admin');
 
 create table profiles (
@@ -12,15 +13,17 @@ create table profiles (
   updated_at timestamptz not null default now()
 );
 
+-- ── resources (bookable rooms / equipment) ─────────────────
 create table resources (
   id uuid primary key default uuid_generate_v4(),
   name text not null,
-  type text not null,
+  type text not null, -- 'room' | 'equipment'
   description text,
   is_active boolean not null default true,
   created_at timestamptz not null default now()
 );
 
+-- ── bookings ─────────────────────────────────────────────────
 create type booking_status as enum ('pending', 'approved', 'rejected', 'cancelled');
 
 create table bookings (
@@ -34,12 +37,14 @@ create table bookings (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint valid_range check (end_time > start_time),
+  -- DB-level overlap prevention for active (pending/approved) bookings on the same resource
   exclude using gist (
     resource_id with =,
     tstzrange(start_time, end_time) with &&
   ) where (status in ('pending', 'approved'))
 );
 
+-- ── campaigns ────────────────────────────────────────────────
 create table campaigns (
   id uuid primary key default uuid_generate_v4(),
   title text not null,
@@ -49,6 +54,7 @@ create table campaigns (
   created_at timestamptz not null default now()
 );
 
+-- ── donations ────────────────────────────────────────────────
 create type donation_type as enum ('one_off', 'pledge');
 create type donation_status as enum ('pending', 'completed', 'pending_followup', 'followed_up', 'failed');
 
@@ -69,6 +75,7 @@ create table donations (
   updated_at timestamptz not null default now()
 );
 
+-- ── programmes ───────────────────────────────────────────────
 create table programmes (
   id uuid primary key default uuid_generate_v4(),
   name text not null,
@@ -77,6 +84,7 @@ create table programmes (
   created_at timestamptz not null default now()
 );
 
+-- ── Row Level Security ─────────────────────────────────────────
 alter table profiles enable row level security;
 alter table bookings enable row level security;
 alter table donations enable row level security;
@@ -84,6 +92,7 @@ alter table resources enable row level security;
 alter table campaigns enable row level security;
 alter table programmes enable row level security;
 
+-- profiles: users read/update their own row; staff/admin read all
 create policy "profiles_self_select" on profiles for select
   using (auth.uid() = id or exists (
     select 1 from profiles p where p.id = auth.uid() and p.role in ('staff','admin')
@@ -91,9 +100,11 @@ create policy "profiles_self_select" on profiles for select
 create policy "profiles_self_update" on profiles for update
   using (auth.uid() = id);
 
+-- resources & campaigns: public read, staff/admin write
 create policy "resources_public_select" on resources for select using (true);
 create policy "campaigns_public_select" on campaigns for select using (true);
 
+-- bookings: members see their own, staff/admin see all
 create policy "bookings_owner_select" on bookings for select
   using (member_id = auth.uid() or exists (
     select 1 from profiles p where p.id = auth.uid() and p.role in ('staff','admin')
@@ -103,6 +114,7 @@ create policy "bookings_owner_insert" on bookings for insert
 create policy "bookings_staff_update" on bookings for update
   using (exists (select 1 from profiles p where p.id = auth.uid() and p.role in ('staff','admin')));
 
+-- donations: donor sees own, staff/admin see all
 create policy "donations_owner_select" on donations for select
   using (donor_id = auth.uid() or exists (
     select 1 from profiles p where p.id = auth.uid() and p.role in ('staff','admin')
@@ -111,5 +123,6 @@ create policy "donations_public_insert" on donations for insert with check (true
 create policy "donations_staff_update" on donations for update
   using (exists (select 1 from profiles p where p.id = auth.uid() and p.role in ('staff','admin')));
 
+-- programmes: staff/admin only for now
 create policy "programmes_staff_select" on programmes for select
   using (exists (select 1 from profiles p where p.id = auth.uid() and p.role in ('staff','admin')));
