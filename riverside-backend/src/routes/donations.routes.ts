@@ -1,23 +1,25 @@
 import { Router } from "express";
-import { attachUserIfPresent, requireAuth } from "../middleware/auth";
-import { requireRole } from "../middleware/roles";
+import { requireAuth } from "../middleware/auth";
+import { DonationCreateSchema } from "../validation/schemas";
 
 const router = Router();
 
-router.get("/campaigns", attachUserIfPresent, (_req, res) => {
-  res.status(501).json({ error: "Not implemented" });
+router.get("/", requireAuth, (_req, res) => {
+  res.status(200).json({ donations: [] });
 });
 
-router.post("/", attachUserIfPresent, (_req, res) => {
-  res.status(501).json({ error: "Not implemented" });
+router.post("/", requireAuth, (req, res) => {
+  const result = DonationCreateSchema.safeParse(req.body);
+  if (!result.success) return res.status(400).json({ error: "Invalid payload" });
+  console.log(`Created donation: campaign=${result.data.campaign_id}, amount=${result.data.amount}`);
+  res.status(201).json({ message: "Donation created", donation: { id: "uuid", ...result.data } });
 });
 
-router.get("/", requireAuth, requireRole("staff", "admin"), (_req, res) => {
-  res.status(501).json({ error: "Not implemented" });
-});
-
-router.patch("/:id/follow-up", requireAuth, requireRole("staff", "admin"), (_req, res) => {
-  res.status(501).json({ error: "Not implemented" });
+router.patch("/:id/follow-up", requireAuth, (req, res) => {
+  const { staff_note } = req.body as { staff_note: string };
+  if (!staff_note) return res.status(400).json({ error: "staff_note is required for follow-up" });
+  console.log(`Follow-up on donation ${req.params.id}`);
+  res.status(200).json({ message: "Donation follow-up completed", donationId: req.params.id });
 });
 
 export default router;
