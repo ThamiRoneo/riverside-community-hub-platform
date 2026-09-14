@@ -16,4 +16,9 @@ router.patch("/members/:id/role", requireAuth, requireRole("admin"), (_req, res)
   res.status(501).json({ error: "Not implemented — pending re-auth check" });
 });
 
+// Role change requires the acting admin to re-authenticate before it takes effect
+router.patch("/members/:id/role", requireAuth, requireRole("admin"), (_req, res) => {
+  res.status(501).json({ error: "Not implemented — pending re-auth check" });
+});
+
 export default router;
