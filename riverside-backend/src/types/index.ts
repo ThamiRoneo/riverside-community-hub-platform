@@ -6,6 +6,7 @@ export interface AuthedUser {
   role: Role;
 }
 
+// Extends Express's Request type with auth context
 declare global {
   namespace Express {
     interface Request {
