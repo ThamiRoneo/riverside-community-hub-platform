@@ -54,6 +54,9 @@ router.post("/reauthenticate", requireAuth, (req, res) => {
 
 // PATCH /members/:id/role - change member role (requires admin + re-auth)
 router.patch("/members/:id/role", requireAuth, requireRole("admin"), (req, res) => {
+  if (!req.user) {
+    return res.status(401).json({ error: "Not authenticated" });
+  }
   const { id, role } = req.params as { id: string; role: string };
   if (req.user.role !== "admin") {
     return res.status(403).json({ error: "Insufficient role" });
