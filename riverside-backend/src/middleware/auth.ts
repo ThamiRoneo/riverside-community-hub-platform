@@ -2,6 +2,7 @@ import { NextFunction, Request, Response } from "express";
 import { supabaseAdmin, supabaseForUser } from "../config/supabase";
 import { Role } from "../types";
 
+//  Verifies the bearer token via Supabase Auth. then loads the user's role from profiles
 export async function requireAuth(req: Request, res: Response, next: NextFunction) {
   const header = req.headers.authorization;
   if (!header?.startsWith("Bearer ")) {
@@ -35,6 +36,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   next();
 }
 
+// For routes that work for both anonymous visitors and logged-in users
 export async function attachUserIfPresent(req: Request, _res: Response, next: NextFunction) {
   const header = req.headers.authorization;
   if (!header?.startsWith("Bearer ")) return next();
