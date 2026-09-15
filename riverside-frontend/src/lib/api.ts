@@ -62,6 +62,15 @@ export async function apiDelete(path: string): Promise<void> {
   if (!response.ok) throw await apiError(response);
 }
 
+export async function apiDownload(path: string): Promise<Blob> {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    headers: await authHeaders(),
+  });
+
+  if (!response.ok) throw await apiError(response);
+  return response.blob();
+}
+
 async function authHeaders(): Promise<Record<string, string>> {
   const {
     data: { session },
