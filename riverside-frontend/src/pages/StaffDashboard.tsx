@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { apiGet, apiPatch } from "../lib/api";
+import { useEffect, useState, type FormEvent } from "react";
+import { apiGet, apiPatch, apiPost } from "../lib/api";
 import type { BookingRecord, EquipmentRecord, FacilityRecord } from "../types";
 
 export default function StaffDashboard() {
@@ -12,6 +12,11 @@ export default function StaffDashboard() {
   const [message, setMessage] = useState("");
   const [rejectingId, setRejectingId] = useState<string | null>(null);
   const [staffNote, setStaffNote] = useState("");
+  const [resourceName, setResourceName] = useState("");
+  const [resourceDescription, setResourceDescription] = useState("");
+  const [resourceType, setResourceType] = useState<"facility" | "equipment">("facility");
+  const [resourceCapacity, setResourceCapacity] = useState("");
+  const [resourceQuantity, setResourceQuantity] = useState("1");
 
   async function loadData() {
     const [bookingResponse, facilityResponse, equipmentResponse] =
@@ -48,6 +53,36 @@ export default function StaffDashboard() {
       setMessage(
         error instanceof Error ? error.message : `Unable to ${action} booking`,
       );
+    }
+  }
+
+  async function createResource(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    try {
+      if (resourceType === "facility") {
+        await apiPost("/facilities", {
+          name: resourceName,
+          description: resourceDescription || undefined,
+          capacity: Number(resourceCapacity),
+          hourly_rate: 0,
+          active: true,
+        });
+      } else {
+        await apiPost("/equipment", {
+          name: resourceName,
+          description: resourceDescription || undefined,
+          quantity: Number(resourceQuantity),
+          active: true,
+        });
+      }
+      setResourceName("");
+      setResourceDescription("");
+      setResourceCapacity("");
+      setResourceQuantity("1");
+      setMessage("Resource created successfully.");
+      await loadData();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Unable to create resource");
     }
   }
 
@@ -171,6 +206,21 @@ export default function StaffDashboard() {
           boxShadow: "0 8px 20px rgba(0,0,0,0.04)",
         }}
       >
+        <h3>Add resource</h3>
+        <form onSubmit={createResource} style={{ display: "grid", gap: "0.6rem", maxWidth: 560, marginBottom: "1.5rem" }}>
+          <select value={resourceType} onChange={(event) => setResourceType(event.target.value as "facility" | "equipment")}>
+            <option value="facility">Facility</option>
+            <option value="equipment">Equipment</option>
+          </select>
+          <input required placeholder="Name" value={resourceName} onChange={(event) => setResourceName(event.target.value)} />
+          <input placeholder="Description" value={resourceDescription} onChange={(event) => setResourceDescription(event.target.value)} />
+          {resourceType === "facility" ? (
+            <input required min="1" type="number" placeholder="Capacity" value={resourceCapacity} onChange={(event) => setResourceCapacity(event.target.value)} />
+          ) : (
+            <input required min="1" type="number" placeholder="Quantity" value={resourceQuantity} onChange={(event) => setResourceQuantity(event.target.value)} />
+          )}
+          <button type="submit">Add resource</button>
+        </form>
         <h3>Inventory overview</h3>
         <div
           style={{
