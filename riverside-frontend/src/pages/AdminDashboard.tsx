@@ -159,11 +159,20 @@ export default function AdminDashboard() {
           {donations.map((donation) => (
             <li key={donation.id} style={{ marginBottom: "1rem" }}>
               <strong>
-                R{Number(donation.amount).toLocaleString()} - {donation.campaigns?.title ?? "Campaign"}
+                R{Number(donation.amount).toLocaleString()} -{" "}
+                {donation.campaigns?.title ?? "Campaign"}
               </strong>
-              <div>{donation.donor_name ?? "Anonymous donor"} ({donation.status})</div>
+              <div>
+                {donation.donor_name ?? "Anonymous donor"} ({donation.status})
+              </div>
               {donation.status === "pending_followup" ? (
-                <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.4rem" }}>
+                <div
+                  style={{
+                    display: "flex",
+                    gap: "0.5rem",
+                    marginTop: "0.4rem",
+                  }}
+                >
                   <input
                     aria-label={`Follow-up note for donation ${donation.id}`}
                     placeholder="Staff note"
@@ -175,7 +184,10 @@ export default function AdminDashboard() {
                       }))
                     }
                   />
-                  <button type="button" onClick={() => completeFollowUp(donation.id)}>
+                  <button
+                    type="button"
+                    onClick={() => completeFollowUp(donation.id)}
+                  >
                     Complete follow-up
                   </button>
                 </div>
