@@ -41,7 +41,8 @@ router.get(
       )
       .order("created_at", { ascending: false });
 
-    if (error) return res.status(500).json({ error: "Unable to export donations" });
+    if (error)
+      return res.status(500).json({ error: "Unable to export donations" });
 
     const columns = [
       "id",
@@ -58,7 +59,9 @@ router.get(
       "created_at",
     ];
     const rows = (data ?? []).map((donation) =>
-      columns.map((column) => csvCell(donation[column as keyof typeof donation])).join(","),
+      columns
+        .map((column) => csvCell(donation[column as keyof typeof donation]))
+        .join(","),
     );
 
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
