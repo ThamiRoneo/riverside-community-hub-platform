@@ -1,3 +1,5 @@
+import { supabase } from "./supabase";
+
 export const API_BASE_URL =
   import.meta.env.VITE_API_URL ?? "http://localhost:4000/api";
 
@@ -7,7 +9,9 @@ export interface ApiResponse<T> {
 }
 
 export async function apiGet<T>(path: string): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`);
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    headers: await authHeaders(),
+  });
 
   if (!response.ok) {
     throw new Error(`Request failed: ${response.status}`);
@@ -24,6 +28,7 @@ export async function apiPost<T>(
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      ...(await authHeaders()),
     },
     body: JSON.stringify(payload),
   });
@@ -33,4 +38,14 @@ export async function apiPost<T>(
   }
 
   return (await response.json()) as T;
+}
+
+async function authHeaders(): Promise<Record<string, string>> {
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+
+  return session?.access_token
+    ? { Authorization: `Bearer ${session.access_token}` }
+    : {};
 }
