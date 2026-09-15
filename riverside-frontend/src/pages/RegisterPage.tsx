@@ -7,17 +7,12 @@ export default function RegisterPage() {
   const { register } = useAuth();
   const [fullName, setFullName] = useState("Aisha Member");
   const [email, setEmail] = useState("member@riverside.example");
+  const [password, setPassword] = useState("Password123");
 
-  const handleSubmit = (event: FormEvent) => {
+  const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
-    register({
-      email,
-      fullName,
-      role: "member",
-      membershipTier: "Standard",
-      joinedAt: new Date().toISOString(),
-    });
-    navigate("/member");
+    await register(fullName, email, password);
+    navigate("/login");
   };
 
   return (
@@ -56,6 +51,8 @@ export default function RegisterPage() {
         />
         <input
           type="password"
+          value={password}
+          onChange={(event) => setPassword(event.target.value)}
           placeholder="Password"
           style={{
             padding: "0.85rem",
