@@ -36,6 +36,23 @@ export async function apiPost<T>(
   return (await response.json()) as T;
 }
 
+export async function apiPatch<T>(
+  path: string,
+  payload: Record<string, unknown>,
+): Promise<T> {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      ...(await authHeaders()),
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) throw await apiError(response);
+  return (await response.json()) as T;
+}
+
 async function authHeaders(): Promise<Record<string, string>> {
   const {
     data: { session },
