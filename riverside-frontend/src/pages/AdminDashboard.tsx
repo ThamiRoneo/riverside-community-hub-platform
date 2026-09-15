@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { apiGet, apiPatch, apiPost } from "../lib/api";
+import { apiDownload, apiGet, apiPatch, apiPost } from "../lib/api";
 import type {
   CampaignRecord,
   DonationRecord,
@@ -107,6 +107,23 @@ export default function AdminDashboard() {
     } catch (error) {
       setActionMessage(
         error instanceof Error ? error.message : "Unable to update member role",
+      );
+    }
+  }
+
+  async function exportDonations() {
+    try {
+      const blob = await apiDownload("/donations/export.csv");
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "donations.csv";
+      link.click();
+      URL.revokeObjectURL(url);
+      setActionMessage("Donation export downloaded.");
+    } catch (error) {
+      setActionMessage(
+        error instanceof Error ? error.message : "Unable to export donations",
       );
     }
   }
@@ -238,6 +255,9 @@ export default function AdminDashboard() {
           ))}
         </ul>
         <h3>Donation follow-up</h3>
+        <button type="button" onClick={exportDonations}>
+          Export donations CSV
+        </button>
         {donations.length === 0 ? <p>No donations found.</p> : null}
         {actionMessage ? <p role="status">{actionMessage}</p> : null}
         <ul>
