@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { apiGet, apiPatch } from "../lib/api";
+import { useEffect, useState, type FormEvent } from "react";
+import { apiGet, apiPatch, apiPost } from "../lib/api";
 import type {
   CampaignRecord,
   DonationRecord,
@@ -16,6 +16,9 @@ export default function AdminDashboard() {
   const [donations, setDonations] = useState<DonationRecord[]>([]);
   const [followUpNote, setFollowUpNote] = useState<Record<string, string>>({});
   const [actionMessage, setActionMessage] = useState("");
+  const [newMemberName, setNewMemberName] = useState("");
+  const [newMemberEmail, setNewMemberEmail] = useState("");
+  const [newMemberPassword, setNewMemberPassword] = useState("");
   const [status, setStatus] = useState<"loading" | "ready" | "error">(
     "loading",
   );
@@ -67,6 +70,43 @@ export default function AdminDashboard() {
     } catch (error) {
       setActionMessage(
         error instanceof Error ? error.message : "Unable to complete follow-up",
+      );
+    }
+  }
+
+  async function createMember(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    try {
+      await apiPost("/members", {
+        full_name: newMemberName,
+        email: newMemberEmail,
+        password: newMemberPassword,
+      });
+      setNewMemberName("");
+      setNewMemberEmail("");
+      setNewMemberPassword("");
+      setActionMessage("Member created successfully.");
+      const response = await apiGet<{ members: MemberRecord[] }>("/members");
+      setMembers(response.members);
+    } catch (error) {
+      setActionMessage(
+        error instanceof Error ? error.message : "Unable to create member",
+      );
+    }
+  }
+
+  async function updateMemberRole(id: string, role: MemberRecord["role"]) {
+    try {
+      await apiPatch(`/members/${id}/role`, { role });
+      setMembers((current) =>
+        current.map((member) =>
+          member.id === id ? { ...member, role } : member,
+        ),
+      );
+      setActionMessage("Member role updated.");
+    } catch (error) {
+      setActionMessage(
+        error instanceof Error ? error.message : "Unable to update member role",
       );
     }
   }
@@ -144,11 +184,56 @@ export default function AdminDashboard() {
           ))}
         </ul>
         <h3>Recent members</h3>
+        <form
+          onSubmit={createMember}
+          style={{
+            display: "grid",
+            gap: "0.5rem",
+            maxWidth: 520,
+            marginBottom: "1rem",
+          }}
+        >
+          <input
+            required
+            placeholder="Full name"
+            value={newMemberName}
+            onChange={(event) => setNewMemberName(event.target.value)}
+          />
+          <input
+            required
+            type="email"
+            placeholder="Email"
+            value={newMemberEmail}
+            onChange={(event) => setNewMemberEmail(event.target.value)}
+          />
+          <input
+            required
+            minLength={8}
+            type="password"
+            placeholder="Temporary password"
+            value={newMemberPassword}
+            onChange={(event) => setNewMemberPassword(event.target.value)}
+          />
+          <button type="submit">Create member</button>
+        </form>
         {members.length === 0 ? <p>No members found.</p> : null}
         <ul>
           {members.slice(0, 10).map((member) => (
             <li key={member.id}>
-              {member.full_name} ({member.role})
+              {member.full_name} ({member.role}){" "}
+              <select
+                value={member.role}
+                onChange={(event) =>
+                  updateMemberRole(
+                    member.id,
+                    event.target.value as MemberRecord["role"],
+                  )
+                }
+              >
+                <option value="member">Member</option>
+                <option value="staff">Staff</option>
+                <option value="admin">Admin</option>
+              </select>
             </li>
           ))}
         </ul>
