@@ -7,6 +7,7 @@ export interface User {
   role: Role;
   membershipTier?: string;
   joinedAt?: string;
+  membershipExpiresAt?: string | null;
 }
 
 export interface Programme {
@@ -99,6 +100,15 @@ export interface ReportRecord {
 }
 
 export interface MemberRecord {
+  id: string;
+  full_name: string;
+  phone: string | null;
+  role: Role;
+  membership_expires_at: string | null;
+  created_at: string;
+}
+
+export interface MemberProfileRecord {
   id: string;
   full_name: string;
   phone: string | null;
