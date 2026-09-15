@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import type { Role, User } from "../types";
-import { apiGet } from "../lib/api";
+import { apiGet, apiPost } from "../lib/api";
 import { supabase } from "../lib/supabase";
 
 interface AuthContextValue {
@@ -20,7 +20,19 @@ interface AuthContextValue {
     email: string,
     password: string,
   ) => Promise<void>;
-  logout: () => void;
+  logout: () => Promise<void>;
+}
+
+interface AuthResponse {
+  session: { access_token: string; refresh_token: string } | null;
+  user: {
+    id: string;
+    email?: string;
+    role: Role;
+    full_name?: string;
+    created_at?: string;
+    membership_expires_at?: string | null;
+  };
 }
 
 const STORAGE_KEY = "riverside-auth-user";
@@ -77,54 +89,51 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [user]);
 
   const login = useCallback(async (email: string, password: string) => {
-    const { error } = await supabase.auth.signInWithPassword({
+    const response = await apiPost<AuthResponse>("/auth/login", {
       email,
       password,
     });
+    if (!response.session) throw new Error("No active session was created");
+    const { error } = await supabase.auth.setSession(response.session);
     if (error) throw error;
 
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
-    if (!session) throw new Error("No Supabase session was created");
-
-    const response = await apiGet<{
-      user: { id: string; email?: string; role: Role };
-    }>("/auth/me");
     setUser({
       id: response.user.id,
       email: response.user.email ?? email,
-      fullName: session.user.user_metadata.full_name ?? "Riverside member",
+      fullName: response.user.full_name ?? "Riverside member",
       role: response.user.role,
       membershipTier: "Standard",
-      joinedAt: session.user.created_at,
+      joinedAt: response.user.created_at,
     });
   }, []);
 
   const register = useCallback(
     async (fullName: string, email: string, password: string) => {
-      const { data, error } = await supabase.auth.signUp({
+      const response = await apiPost<AuthResponse>("/auth/signup", {
         email,
         password,
-        options: { data: { full_name: fullName } },
+        full_name: fullName,
       });
-      if (error) throw error;
 
-      if (data.session && data.user) {
+      if (response.session) {
+        const { error } = await supabase.auth.setSession(response.session);
+        if (error) throw error;
         setUser({
-          id: data.user.id,
+          id: response.user.id,
           email,
           fullName,
           role: "member",
           membershipTier: "Standard",
-          joinedAt: data.user.created_at,
+          joinedAt: response.user.created_at,
         });
       }
     },
     [],
   );
 
-  const logout = useCallback(() => {
+  const logout = useCallback(async () => {
+    const { error } = await supabase.auth.signOut();
+    if (error) throw error;
     setUser(null);
   }, []);
 
