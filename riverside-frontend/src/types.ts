@@ -106,3 +106,17 @@ export interface MemberRecord {
   membership_expires_at: string | null;
   created_at: string;
 }
+
+export interface DonationRecord {
+  id: string;
+  campaign_id: string;
+  amount: number;
+  type: "one_off" | "monthly";
+  status: "pending_followup" | "followed_up";
+  donor_name: string | null;
+  donor_email: string | null;
+  anonymous: boolean;
+  staff_note: string | null;
+  created_at: string;
+  campaigns?: { title?: string } | null;
+}
