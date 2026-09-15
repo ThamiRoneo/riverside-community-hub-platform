@@ -6,6 +6,7 @@ import type {
   EquipmentRecord,
   FacilityRecord,
   MemberProfileRecord,
+  NotificationRecord,
 } from "../types";
 
 export default function MemberDashboard() {
@@ -17,6 +18,7 @@ export default function MemberDashboard() {
   const [membershipStatus, setMembershipStatus] = useState("not_set");
   const [profileName, setProfileName] = useState("");
   const [profilePhone, setProfilePhone] = useState("");
+  const [notifications, setNotifications] = useState<NotificationRecord[]>([]);
   const [resourceId, setResourceId] = useState("");
   const [startAt, setStartAt] = useState("");
   const [endAt, setEndAt] = useState("");
@@ -39,16 +41,26 @@ export default function MemberDashboard() {
         profile: MemberProfileRecord;
         membership_status: string;
       }>("/members/me"),
+      apiGet<{ notifications: NotificationRecord[] }>("/notifications"),
     ])
-      .then(([, facilityResponse, equipmentResponse, profileResponse]) => {
-        setFacilities(facilityResponse.facilities);
-        setEquipment(equipmentResponse.equipment);
-        setProfile(profileResponse.profile);
-        setMembershipStatus(profileResponse.membership_status);
-        setProfileName(profileResponse.profile.full_name);
-        setProfilePhone(profileResponse.profile.phone ?? "");
-        setStatus("ready");
-      })
+      .then(
+        ([
+          ,
+          facilityResponse,
+          equipmentResponse,
+          profileResponse,
+          notificationResponse,
+        ]) => {
+          setFacilities(facilityResponse.facilities);
+          setEquipment(equipmentResponse.equipment);
+          setProfile(profileResponse.profile);
+          setMembershipStatus(profileResponse.membership_status);
+          setProfileName(profileResponse.profile.full_name);
+          setProfilePhone(profileResponse.profile.phone ?? "");
+          setNotifications(notificationResponse.notifications);
+          setStatus("ready");
+        },
+      )
       .catch(() => setStatus("error"));
   }, []);
 
@@ -102,6 +114,25 @@ export default function MemberDashboard() {
     }
   }
 
+  async function markNotificationRead(id: string) {
+    try {
+      await apiPatch(`/notifications/${id}/read`, {});
+      setNotifications((current) =>
+        current.map((notification) =>
+          notification.id === id
+            ? { ...notification, read: true }
+            : notification,
+        ),
+      );
+    } catch (error) {
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "Unable to update notification",
+      );
+    }
+  }
+
   return (
     <div style={{ display: "grid", gap: "1.5rem" }}>
       <section
@@ -146,6 +177,35 @@ export default function MemberDashboard() {
           </label>
           <button type="submit">Save profile</button>
         </form>
+      </section>
+
+      <section
+        style={{
+          background: "white",
+          borderRadius: 18,
+          padding: "1.5rem",
+          boxShadow: "0 8px 20px rgba(0,0,0,0.04)",
+        }}
+      >
+        <h2>Notifications</h2>
+        {notifications.length === 0 ? <p>No notifications yet.</p> : null}
+        <ul>
+          {notifications.map((notification) => (
+            <li key={notification.id}>
+              <span style={{ fontWeight: notification.read ? 400 : 700 }}>
+                {notification.message}
+              </span>{" "}
+              {!notification.read ? (
+                <button
+                  type="button"
+                  onClick={() => markNotificationRead(notification.id)}
+                >
+                  Mark as read
+                </button>
+              ) : null}
+            </li>
+          ))}
+        </ul>
       </section>
 
       <section
