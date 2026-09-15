@@ -90,3 +90,19 @@ export interface BookingRecord {
   facilities?: { name?: string } | null;
   equipment?: { name?: string } | null;
 }
+
+export interface ReportRecord {
+  bookings_this_month: number;
+  total_donations: number;
+  active_members: number;
+  generated_at: string;
+}
+
+export interface MemberRecord {
+  id: string;
+  full_name: string;
+  phone: string | null;
+  role: Role;
+  membership_expires_at: string | null;
+  created_at: string;
+}
