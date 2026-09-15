@@ -26,12 +26,17 @@ export const MemberUpdateSchema = z.object({
   role: z.enum(["visitor", "member", "staff", "admin"]),
 });
 
-export const BookingCreateSchema = z.object({
-  facility_id: z.string(),
-  equipment_id: z.string(),
-  start_at: z.string().datetime(),
-  end_at: z.string().datetime(),
-});
+export const BookingCreateSchema = z
+  .object({
+    facility_id: z.string().uuid().optional(),
+    equipment_id: z.string().uuid().optional(),
+    start_at: z.string().datetime(),
+    end_at: z.string().datetime(),
+  })
+  .refine(
+    (value) => Boolean(value.facility_id) !== Boolean(value.equipment_id),
+    { message: "Provide exactly one facility_id or equipment_id" },
+  );
 
 export const BookingApproveSchema = z.object({
   staff_note: z.string().min(1),
