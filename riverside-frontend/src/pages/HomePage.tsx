@@ -1,12 +1,31 @@
 import { Link } from "react-router-dom";
-import { donationCampaigns, programmes } from "../data/mockData";
+import { useEffect, useState } from "react";
+import { apiGet } from "../lib/api";
+import type { CampaignRecord, ProgrammeRecord } from "../types";
 
 export default function HomePage() {
-  const campaign = donationCampaigns[0];
-  const progress = Math.min(
-    (campaign.currentAmount / campaign.goalAmount) * 100,
-    100,
+  const [campaign, setCampaign] = useState<CampaignRecord | null>(null);
+  const [programmes, setProgrammes] = useState<ProgrammeRecord[]>([]);
+  const [status, setStatus] = useState<"loading" | "ready" | "error">(
+    "loading",
   );
+
+  useEffect(() => {
+    Promise.all([
+      apiGet<{ campaigns: CampaignRecord[] }>("/campaigns"),
+      apiGet<{ programmes: ProgrammeRecord[] }>("/programmes"),
+    ])
+      .then(([campaignResponse, programmeResponse]) => {
+        setCampaign(campaignResponse.campaigns[0] ?? null);
+        setProgrammes(programmeResponse.programmes.slice(0, 3));
+        setStatus("ready");
+      })
+      .catch(() => setStatus("error"));
+  }, []);
+
+  const progress = campaign?.goal_amount
+    ? Math.min((campaign.current_amount / campaign.goal_amount) * 100, 100)
+    : 0;
 
   return (
     <div>
@@ -88,40 +107,60 @@ export default function HomePage() {
           }}
         >
           <h3 style={{ marginTop: 0 }}>Current campaign</h3>
-          <p
-            style={{ fontSize: "1.8rem", fontWeight: 800, margin: "0.25rem 0" }}
-          >
-            R{campaign.currentAmount.toLocaleString()}
-          </p>
-          <p>Raised so far of R{campaign.goalAmount.toLocaleString()}</p>
-          <div
-            style={{
-              height: 12,
-              borderRadius: 999,
-              background: "#e5e7eb",
-              overflow: "hidden",
-              margin: "1rem 0",
-            }}
-          >
-            <div
-              style={{
-                width: `${progress}%`,
-                height: "100%",
-                background: "#22c55e",
-              }}
-            />
-          </div>
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              fontSize: "0.9rem",
-              color: "#475569",
-            }}
-          >
-            <span>{Math.round(progress)}% funded</span>
-            <span>Goal: R{campaign.goalAmount.toLocaleString()}</span>
-          </div>
+          {status === "loading" ? <p>Loading campaign...</p> : null}
+          {status === "error" ? (
+            <p role="alert">Unable to load campaign data.</p>
+          ) : null}
+          {status === "ready" && !campaign ? (
+            <p>No active campaign right now.</p>
+          ) : null}
+          {campaign ? (
+            <>
+              <p
+                style={{
+                  fontSize: "1.8rem",
+                  fontWeight: 800,
+                  margin: "0.25rem 0",
+                }}
+              >
+                R{campaign.current_amount.toLocaleString()}
+              </p>
+              <p>
+                Raised so far of R
+                {campaign.goal_amount?.toLocaleString() ?? "the campaign goal"}
+              </p>
+              <div
+                style={{
+                  height: 12,
+                  borderRadius: 999,
+                  background: "#e5e7eb",
+                  overflow: "hidden",
+                  margin: "1rem 0",
+                }}
+              >
+                <div
+                  style={{
+                    width: `${progress}%`,
+                    height: "100%",
+                    background: "#22c55e",
+                  }}
+                />
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  fontSize: "0.9rem",
+                  color: "#475569",
+                }}
+              >
+                <span>{Math.round(progress)}% funded</span>
+                <span>
+                  Goal: R{campaign.goal_amount?.toLocaleString() ?? "TBC"}
+                </span>
+              </div>
+            </>
+          ) : null}
         </div>
       </section>
 
@@ -165,13 +204,16 @@ export default function HomePage() {
               }}
             >
               <img
-                src={programme.image}
+                src={
+                  programme.image_url ??
+                  "https://images.unsplash.com/photo-1522202176988-66273c2fd55f?auto=format&fit=crop&w=900&q=80"
+                }
                 alt={programme.title}
                 style={{ width: "100%", height: 180, objectFit: "cover" }}
               />
               <div style={{ padding: "1rem" }}>
                 <p style={{ color: "#1d4ed8", fontWeight: 700 }}>
-                  {programme.ageRange}
+                  {programme.age_range ?? "All ages"}
                 </p>
                 <h3 style={{ margin: "0.4rem 0" }}>{programme.title}</h3>
                 <p style={{ color: "#475569", minHeight: 80 }}>
@@ -184,7 +226,7 @@ export default function HomePage() {
                     color: "#334155",
                   }}
                 >
-                  {programme.schedule}
+                  {programme.schedule_info ?? "Schedule to be confirmed"}
                 </small>
               </div>
             </article>
