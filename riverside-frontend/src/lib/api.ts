@@ -53,6 +53,15 @@ export async function apiPatch<T>(
   return (await response.json()) as T;
 }
 
+export async function apiDelete(path: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: "DELETE",
+    headers: await authHeaders(),
+  });
+
+  if (!response.ok) throw await apiError(response);
+}
+
 async function authHeaders(): Promise<Record<string, string>> {
   const {
     data: { session },
