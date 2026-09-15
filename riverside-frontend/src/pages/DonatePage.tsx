@@ -1,11 +1,32 @@
-import { useState } from "react";
-import { donationCampaigns } from "../data/mockData";
+import { useEffect, useState } from "react";
+import { apiGet } from "../lib/api";
+import type { CampaignRecord } from "../types";
 
 export default function DonatePage() {
-  const campaign = donationCampaigns[0];
+  const [campaign, setCampaign] = useState<CampaignRecord | null>(null);
+  const [status, setStatus] = useState<"loading" | "ready" | "error">(
+    "loading",
+  );
   const [amount, setAmount] = useState(250);
+
+  useEffect(() => {
+    apiGet<{ campaigns: CampaignRecord[] }>("/campaigns")
+      .then((response) => {
+        setCampaign(response.campaigns[0] ?? null);
+        setStatus("ready");
+      })
+      .catch(() => setStatus("error"));
+  }, []);
+
+  if (status === "loading") return <p>Loading donation campaign...</p>;
+  if (status === "error")
+    return <p role="alert">Unable to load donation campaign.</p>;
+  if (!campaign) return <p>No active donation campaign is available.</p>;
+
   const progress = Math.min(
-    (campaign.currentAmount / campaign.goalAmount) * 100,
+    campaign.goal_amount
+      ? (campaign.current_amount / campaign.goal_amount) * 100
+      : 0,
     100,
   );
 
@@ -22,9 +43,9 @@ export default function DonatePage() {
         }}
       >
         <h1>Support the campaign</h1>
-        <p>{campaign.description}</p>
+        <p>{campaign.description ?? "Support Riverside Community Hub."}</p>
         <div style={{ marginBottom: "1rem" }}>
-          <strong>R{campaign.currentAmount.toLocaleString()}</strong> raised so
+          <strong>R{campaign.current_amount.toLocaleString()}</strong> raised so
           far
           <div
             style={{
