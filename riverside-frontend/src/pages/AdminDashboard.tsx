@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { apiGet } from "../lib/api";
+import { apiGet, apiPatch } from "../lib/api";
 import type {
   CampaignRecord,
+  DonationRecord,
   MemberRecord,
   ProgrammeRecord,
   ReportRecord,
@@ -12,6 +13,9 @@ export default function AdminDashboard() {
   const [members, setMembers] = useState<MemberRecord[]>([]);
   const [programmes, setProgrammes] = useState<ProgrammeRecord[]>([]);
   const [campaigns, setCampaigns] = useState<CampaignRecord[]>([]);
+  const [donations, setDonations] = useState<DonationRecord[]>([]);
+  const [followUpNote, setFollowUpNote] = useState<Record<string, string>>({});
+  const [actionMessage, setActionMessage] = useState("");
   const [status, setStatus] = useState<"loading" | "ready" | "error">(
     "loading",
   );
@@ -22,6 +26,7 @@ export default function AdminDashboard() {
       apiGet<{ members: MemberRecord[] }>("/members"),
       apiGet<{ programmes: ProgrammeRecord[] }>("/programmes"),
       apiGet<{ campaigns: CampaignRecord[] }>("/campaigns"),
+      apiGet<{ donations: DonationRecord[] }>("/donations"),
     ])
       .then(
         ([
@@ -29,16 +34,42 @@ export default function AdminDashboard() {
           memberResponse,
           programmeResponse,
           campaignResponse,
+          donationResponse,
         ]) => {
           setReport(reportResponse);
           setMembers(memberResponse.members);
           setProgrammes(programmeResponse.programmes);
           setCampaigns(campaignResponse.campaigns);
+          setDonations(donationResponse.donations);
           setStatus("ready");
         },
       )
       .catch(() => setStatus("error"));
   }, []);
+
+  async function completeFollowUp(id: string) {
+    const staffNote = followUpNote[id]?.trim();
+    if (!staffNote) {
+      setActionMessage("Add a staff note before completing follow-up.");
+      return;
+    }
+
+    try {
+      await apiPatch(`/donations/${id}/follow-up`, { staff_note: staffNote });
+      setDonations((current) =>
+        current.map((donation) =>
+          donation.id === id
+            ? { ...donation, status: "followed_up", staff_note: staffNote }
+            : donation,
+        ),
+      );
+      setActionMessage("Donation follow-up completed.");
+    } catch (error) {
+      setActionMessage(
+        error instanceof Error ? error.message : "Unable to complete follow-up",
+      );
+    }
+  }
 
   if (status === "loading") return <p>Loading admin dashboard...</p>;
   if (status === "error")
@@ -118,6 +149,37 @@ export default function AdminDashboard() {
           {members.slice(0, 10).map((member) => (
             <li key={member.id}>
               {member.full_name} ({member.role})
+            </li>
+          ))}
+        </ul>
+        <h3>Donation follow-up</h3>
+        {donations.length === 0 ? <p>No donations found.</p> : null}
+        {actionMessage ? <p role="status">{actionMessage}</p> : null}
+        <ul>
+          {donations.map((donation) => (
+            <li key={donation.id} style={{ marginBottom: "1rem" }}>
+              <strong>
+                R{Number(donation.amount).toLocaleString()} - {donation.campaigns?.title ?? "Campaign"}
+              </strong>
+              <div>{donation.donor_name ?? "Anonymous donor"} ({donation.status})</div>
+              {donation.status === "pending_followup" ? (
+                <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.4rem" }}>
+                  <input
+                    aria-label={`Follow-up note for donation ${donation.id}`}
+                    placeholder="Staff note"
+                    value={followUpNote[donation.id] ?? ""}
+                    onChange={(event) =>
+                      setFollowUpNote((current) => ({
+                        ...current,
+                        [donation.id]: event.target.value,
+                      }))
+                    }
+                  />
+                  <button type="button" onClick={() => completeFollowUp(donation.id)}>
+                    Complete follow-up
+                  </button>
+                </div>
+              ) : null}
             </li>
           ))}
         </ul>
