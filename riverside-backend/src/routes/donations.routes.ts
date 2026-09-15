@@ -6,6 +6,11 @@ import { DonationCreateSchema } from "../validation/schemas";
 
 const router = Router();
 
+function csvCell(value: unknown) {
+  const text = value == null ? "" : String(value);
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
 router.get(
   "/",
   requireAuth,
@@ -21,6 +26,44 @@ router.get(
     if (error)
       return res.status(500).json({ error: "Unable to load donations" });
     return res.status(200).json({ donations: data ?? [] });
+  },
+);
+
+router.get(
+  "/export.csv",
+  requireAuth,
+  requireRole("staff", "admin"),
+  async (_req, res) => {
+    const { data, error } = await supabaseAdmin
+      .from("donations")
+      .select(
+        "id, campaign_id, amount, type, status, donor_name, donor_email, donor_phone, anonymous, receipt_opt_in, staff_note, created_at",
+      )
+      .order("created_at", { ascending: false });
+
+    if (error) return res.status(500).json({ error: "Unable to export donations" });
+
+    const columns = [
+      "id",
+      "campaign_id",
+      "amount",
+      "type",
+      "status",
+      "donor_name",
+      "donor_email",
+      "donor_phone",
+      "anonymous",
+      "receipt_opt_in",
+      "staff_note",
+      "created_at",
+    ];
+    const rows = (data ?? []).map((donation) =>
+      columns.map((column) => csvCell(donation[column as keyof typeof donation])).join(","),
+    );
+
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", "attachment; filename=donations.csv");
+    return res.status(200).send([columns.join(","), ...rows].join("\n"));
   },
 );
 
