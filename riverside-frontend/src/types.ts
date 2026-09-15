@@ -44,3 +44,35 @@ export interface DonationCampaign {
   currentAmount: number;
   description: string;
 }
+
+export interface ProgrammeRecord {
+  id: string;
+  title: string;
+  description: string | null;
+  age_range: string | null;
+  schedule_info: string | null;
+  image_url: string | null;
+}
+
+export interface FacilityRecord {
+  id: string;
+  name: string;
+  description: string | null;
+  capacity: number | null;
+  hourly_rate: number;
+}
+
+export interface EquipmentRecord {
+  id: string;
+  name: string;
+  description: string | null;
+  quantity: number;
+}
+
+export interface CampaignRecord {
+  id: string;
+  title: string;
+  description: string | null;
+  goal_amount: number | null;
+  current_amount: number;
+}
