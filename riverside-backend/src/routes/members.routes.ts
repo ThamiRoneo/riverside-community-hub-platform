@@ -2,9 +2,61 @@ import { Router } from "express";
 import { supabaseAdmin } from "../config/supabase";
 import { requireAuth } from "../middleware/auth";
 import { requireRole } from "../middleware/roles";
-import { MemberCreateSchema, MemberUpdateSchema } from "../validation/schemas";
+import {
+  MemberCreateSchema,
+  MemberProfileUpdateSchema,
+  MemberUpdateSchema,
+} from "../validation/schemas";
 
 const router = Router();
+
+router.get("/me", requireAuth, async (req, res) => {
+  const { data, error } = await supabaseAdmin
+    .from("profiles")
+    .select("id, full_name, phone, role, membership_expires_at, created_at")
+    .eq("id", req.user?.id)
+    .single();
+
+  if (error || !data)
+    return res.status(404).json({ error: "Profile not found" });
+
+  const expiresAt = data.membership_expires_at
+    ? new Date(data.membership_expires_at)
+    : null;
+  const now = new Date();
+  const expiringSoon = expiresAt
+    ? expiresAt.getTime() >= now.getTime() &&
+      expiresAt.getTime() <= now.getTime() + 30 * 24 * 60 * 60 * 1000
+    : false;
+
+  return res.status(200).json({
+    profile: data,
+    membership_status: expiresAt
+      ? expiresAt < now
+        ? "expired"
+        : expiringSoon
+          ? "expiring_soon"
+          : "active"
+      : "not_set",
+  });
+});
+
+router.patch("/me", requireAuth, async (req, res) => {
+  const result = MemberProfileUpdateSchema.safeParse(req.body);
+  if (!result.success)
+    return res.status(400).json({ error: "Invalid profile" });
+
+  const { data, error } = await supabaseAdmin
+    .from("profiles")
+    .update(result.data)
+    .eq("id", req.user?.id)
+    .select("id, full_name, phone, role, membership_expires_at, created_at")
+    .single();
+
+  if (error || !data)
+    return res.status(404).json({ error: "Profile not found" });
+  return res.status(200).json({ profile: data });
+});
 
 router.get("/", requireAuth, requireRole("admin"), async (_req, res) => {
   const { data, error } = await supabaseAdmin
