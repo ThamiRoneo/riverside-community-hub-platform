@@ -1,13 +1,22 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useAuth } from "../context/AuthContext";
 import { apiGet, apiPost, apiPatch } from "../lib/api";
-import type { BookingRecord, EquipmentRecord, FacilityRecord } from "../types";
+import type {
+  BookingRecord,
+  EquipmentRecord,
+  FacilityRecord,
+  MemberProfileRecord,
+} from "../types";
 
 export default function MemberDashboard() {
   const { user } = useAuth();
   const [bookings, setBookings] = useState<BookingRecord[]>([]);
   const [facilities, setFacilities] = useState<FacilityRecord[]>([]);
   const [equipment, setEquipment] = useState<EquipmentRecord[]>([]);
+  const [profile, setProfile] = useState<MemberProfileRecord | null>(null);
+  const [membershipStatus, setMembershipStatus] = useState("not_set");
+  const [profileName, setProfileName] = useState("");
+  const [profilePhone, setProfilePhone] = useState("");
   const [resourceId, setResourceId] = useState("");
   const [startAt, setStartAt] = useState("");
   const [endAt, setEndAt] = useState("");
@@ -26,10 +35,18 @@ export default function MemberDashboard() {
       loadBookings(),
       apiGet<{ facilities: FacilityRecord[] }>("/facilities"),
       apiGet<{ equipment: EquipmentRecord[] }>("/equipment"),
+      apiGet<{
+        profile: MemberProfileRecord;
+        membership_status: string;
+      }>("/members/me"),
     ])
-      .then(([, facilityResponse, equipmentResponse]) => {
+      .then(([, facilityResponse, equipmentResponse, profileResponse]) => {
         setFacilities(facilityResponse.facilities);
         setEquipment(equipmentResponse.equipment);
+        setProfile(profileResponse.profile);
+        setMembershipStatus(profileResponse.membership_status);
+        setProfileName(profileResponse.profile.full_name);
+        setProfilePhone(profileResponse.profile.phone ?? "");
         setStatus("ready");
       })
       .catch(() => setStatus("error"));
@@ -69,6 +86,22 @@ export default function MemberDashboard() {
     }
   }
 
+  async function saveProfile(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    try {
+      const response = await apiPatch<{ profile: MemberProfileRecord }>(
+        "/members/me",
+        { full_name: profileName, phone: profilePhone || undefined },
+      );
+      setProfile(response.profile);
+      setMessage("Profile updated successfully.");
+    } catch (error) {
+      setMessage(
+        error instanceof Error ? error.message : "Unable to update profile",
+      );
+    }
+  }
+
   return (
     <div style={{ display: "grid", gap: "1.5rem" }}>
       <section
@@ -81,7 +114,7 @@ export default function MemberDashboard() {
       >
         <h1 style={{ marginTop: 0 }}>Member dashboard</h1>
         <p>
-          <strong>Name:</strong> {user?.fullName}
+          <strong>Name:</strong> {profile?.full_name ?? user?.fullName}
         </p>
         <p>
           <strong>Email:</strong> {user?.email}
@@ -90,8 +123,29 @@ export default function MemberDashboard() {
           <strong>Membership:</strong> {user?.membershipTier ?? "Standard"}
         </p>
         <p>
-          <strong>Status:</strong> Expiring soon
+          <strong>Status:</strong> {membershipStatus.replace("_", " ")}
         </p>
+        <form
+          onSubmit={saveProfile}
+          style={{ display: "grid", gap: "0.6rem", maxWidth: 520 }}
+        >
+          <label>
+            Full name
+            <input
+              required
+              value={profileName}
+              onChange={(event) => setProfileName(event.target.value)}
+            />
+          </label>
+          <label>
+            Phone
+            <input
+              value={profilePhone}
+              onChange={(event) => setProfilePhone(event.target.value)}
+            />
+          </label>
+          <button type="submit">Save profile</button>
+        </form>
       </section>
 
       <section
