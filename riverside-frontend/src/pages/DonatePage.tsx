@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { apiGet } from "../lib/api";
+import { type FormEvent, useEffect, useState } from "react";
+import { apiGet, apiPost } from "../lib/api";
 import type { CampaignRecord } from "../types";
 
 export default function DonatePage() {
@@ -8,6 +8,17 @@ export default function DonatePage() {
     "loading",
   );
   const [amount, setAmount] = useState(250);
+  const [donorName, setDonorName] = useState("");
+  const [donorEmail, setDonorEmail] = useState("");
+  const [donorPhone, setDonorPhone] = useState("");
+  const [donationType, setDonationType] = useState<"one_off" | "monthly">(
+    "one_off",
+  );
+  const [anonymous, setAnonymous] = useState(false);
+  const [receiptOptIn, setReceiptOptIn] = useState(false);
+  const [submitStatus, setSubmitStatus] = useState<
+    "idle" | "submitting" | "success" | "error"
+  >("idle");
 
   useEffect(() => {
     apiGet<{ campaigns: CampaignRecord[] }>("/campaigns")
@@ -22,6 +33,7 @@ export default function DonatePage() {
   if (status === "error")
     return <p role="alert">Unable to load donation campaign.</p>;
   if (!campaign) return <p>No active donation campaign is available.</p>;
+  const activeCampaign = campaign;
 
   const progress = Math.min(
     campaign.goal_amount
@@ -29,6 +41,27 @@ export default function DonatePage() {
       : 0,
     100,
   );
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSubmitStatus("submitting");
+
+    try {
+      await apiPost("/donations", {
+        campaign_id: activeCampaign.id,
+        amount,
+        donor_name: anonymous ? undefined : donorName || undefined,
+        donor_email: anonymous ? undefined : donorEmail || undefined,
+        donor_phone: anonymous ? undefined : donorPhone || undefined,
+        type: donationType,
+        anonymous,
+        receipt_opt_in: receiptOptIn,
+      });
+      setSubmitStatus("success");
+    } catch {
+      setSubmitStatus("error");
+    }
+  }
 
   return (
     <div
@@ -120,7 +153,12 @@ export default function DonatePage() {
             marginBottom: "1rem",
           }}
         >
-          <input type="checkbox" />I would like a receipt
+          <input
+            type="checkbox"
+            checked={receiptOptIn}
+            onChange={(event) => setReceiptOptIn(event.target.checked)}
+          />
+          I would like a receipt
         </label>
       </section>
 
@@ -133,9 +171,11 @@ export default function DonatePage() {
         }}
       >
         <h2>Donor details</h2>
-        <form style={{ display: "grid", gap: "1rem" }}>
+        <form onSubmit={handleSubmit} style={{ display: "grid", gap: "1rem" }}>
           <input
             placeholder="Full name"
+            value={donorName}
+            onChange={(event) => setDonorName(event.target.value)}
             style={{
               padding: "0.8rem",
               borderRadius: 10,
@@ -144,6 +184,9 @@ export default function DonatePage() {
           />
           <input
             placeholder="Email address"
+            type="email"
+            value={donorEmail}
+            onChange={(event) => setDonorEmail(event.target.value)}
             style={{
               padding: "0.8rem",
               borderRadius: 10,
@@ -152,6 +195,8 @@ export default function DonatePage() {
           />
           <input
             placeholder="Phone number"
+            value={donorPhone}
+            onChange={(event) => setDonorPhone(event.target.value)}
             style={{
               padding: "0.8rem",
               borderRadius: 10,
@@ -159,17 +204,38 @@ export default function DonatePage() {
             }}
           />
           <select
+            value={donationType}
+            onChange={(event) =>
+              setDonationType(event.target.value as "one_off" | "monthly")
+            }
             style={{
               padding: "0.8rem",
               borderRadius: 10,
               border: "1px solid #cbd5e1",
             }}
           >
-            <option>One-off donation</option>
-            <option>Adopt a parcel pledge</option>
+            <option value="one_off">One-off donation</option>
+            <option value="monthly">Adopt a parcel pledge</option>
           </select>
+          <label
+            style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}
+          >
+            <input
+              type="checkbox"
+              checked={anonymous}
+              onChange={(event) => setAnonymous(event.target.checked)}
+            />
+            Make this donation anonymous
+          </label>
+          {submitStatus === "error" ? (
+            <p role="alert">Unable to submit donation. Please try again.</p>
+          ) : null}
+          {submitStatus === "success" ? (
+            <p role="status">Thank you. Your donation has been recorded.</p>
+          ) : null}
           <button
             type="submit"
+            disabled={submitStatus === "submitting"}
             style={{
               background: "#22c55e",
               color: "white",
@@ -180,7 +246,9 @@ export default function DonatePage() {
               cursor: "pointer",
             }}
           >
-            Submit donation
+            {submitStatus === "submitting"
+              ? "Submitting..."
+              : "Submit donation"}
           </button>
         </form>
       </section>
