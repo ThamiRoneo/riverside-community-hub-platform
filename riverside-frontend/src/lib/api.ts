@@ -13,9 +13,7 @@ export async function apiGet<T>(path: string): Promise<T> {
     headers: await authHeaders(),
   });
 
-  if (!response.ok) {
-    throw new Error(`Request failed: ${response.status}`);
-  }
+  if (!response.ok) throw await apiError(response);
 
   return (await response.json()) as T;
 }
@@ -33,9 +31,7 @@ export async function apiPost<T>(
     body: JSON.stringify(payload),
   });
 
-  if (!response.ok) {
-    throw new Error(`Request failed: ${response.status}`);
-  }
+  if (!response.ok) throw await apiError(response);
 
   return (await response.json()) as T;
 }
@@ -48,4 +44,11 @@ async function authHeaders(): Promise<Record<string, string>> {
   return session?.access_token
     ? { Authorization: `Bearer ${session.access_token}` }
     : {};
+}
+
+async function apiError(response: Response): Promise<Error> {
+  const body = (await response.json().catch(() => null)) as {
+    error?: string;
+  } | null;
+  return new Error(body?.error ?? `Request failed: ${response.status}`);
 }
