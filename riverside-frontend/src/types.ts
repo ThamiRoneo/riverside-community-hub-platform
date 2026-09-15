@@ -130,3 +130,11 @@ export interface DonationRecord {
   created_at: string;
   campaigns?: { title?: string } | null;
 }
+
+export interface NotificationRecord {
+  id: string;
+  booking_id: string | null;
+  message: string;
+  read: boolean;
+  created_at: string;
+}
