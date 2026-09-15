@@ -14,7 +14,9 @@ export default function StaffDashboard() {
   const [staffNote, setStaffNote] = useState("");
   const [resourceName, setResourceName] = useState("");
   const [resourceDescription, setResourceDescription] = useState("");
-  const [resourceType, setResourceType] = useState<"facility" | "equipment">("facility");
+  const [resourceType, setResourceType] = useState<"facility" | "equipment">(
+    "facility",
+  );
   const [resourceCapacity, setResourceCapacity] = useState("");
   const [resourceQuantity, setResourceQuantity] = useState("1");
 
@@ -82,7 +84,9 @@ export default function StaffDashboard() {
       setMessage("Resource created successfully.");
       await loadData();
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Unable to create resource");
+      setMessage(
+        error instanceof Error ? error.message : "Unable to create resource",
+      );
     }
   }
 
@@ -207,17 +211,53 @@ export default function StaffDashboard() {
         }}
       >
         <h3>Add resource</h3>
-        <form onSubmit={createResource} style={{ display: "grid", gap: "0.6rem", maxWidth: 560, marginBottom: "1.5rem" }}>
-          <select value={resourceType} onChange={(event) => setResourceType(event.target.value as "facility" | "equipment")}>
+        <form
+          onSubmit={createResource}
+          style={{
+            display: "grid",
+            gap: "0.6rem",
+            maxWidth: 560,
+            marginBottom: "1.5rem",
+          }}
+        >
+          <select
+            value={resourceType}
+            onChange={(event) =>
+              setResourceType(event.target.value as "facility" | "equipment")
+            }
+          >
             <option value="facility">Facility</option>
             <option value="equipment">Equipment</option>
           </select>
-          <input required placeholder="Name" value={resourceName} onChange={(event) => setResourceName(event.target.value)} />
-          <input placeholder="Description" value={resourceDescription} onChange={(event) => setResourceDescription(event.target.value)} />
+          <input
+            required
+            placeholder="Name"
+            value={resourceName}
+            onChange={(event) => setResourceName(event.target.value)}
+          />
+          <input
+            placeholder="Description"
+            value={resourceDescription}
+            onChange={(event) => setResourceDescription(event.target.value)}
+          />
           {resourceType === "facility" ? (
-            <input required min="1" type="number" placeholder="Capacity" value={resourceCapacity} onChange={(event) => setResourceCapacity(event.target.value)} />
+            <input
+              required
+              min="1"
+              type="number"
+              placeholder="Capacity"
+              value={resourceCapacity}
+              onChange={(event) => setResourceCapacity(event.target.value)}
+            />
           ) : (
-            <input required min="1" type="number" placeholder="Quantity" value={resourceQuantity} onChange={(event) => setResourceQuantity(event.target.value)} />
+            <input
+              required
+              min="1"
+              type="number"
+              placeholder="Quantity"
+              value={resourceQuantity}
+              onChange={(event) => setResourceQuantity(event.target.value)}
+            />
           )}
           <button type="submit">Add resource</button>
         </form>
