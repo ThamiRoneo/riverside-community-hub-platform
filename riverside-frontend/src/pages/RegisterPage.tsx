@@ -7,17 +7,29 @@ export default function RegisterPage() {
   const { register } = useAuth();
   const [fullName, setFullName] = useState("Aisha Member");
   const [email, setEmail] = useState("member@riverside.example");
+  const [password, setPassword] = useState("Password123");
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
-  const handleSubmit = (event: FormEvent) => {
+  const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
-    register({
-      email,
-      fullName,
-      role: "member",
-      membershipTier: "Standard",
-      joinedAt: new Date().toISOString(),
-    });
-    navigate("/member");
+    setError("");
+    setMessage("");
+    setSubmitting(true);
+    try {
+      await register(fullName, email, password);
+      setMessage("Account created. Check your email before signing in.");
+      navigate("/login");
+    } catch (submissionError) {
+      setError(
+        submissionError instanceof Error
+          ? submissionError.message
+          : "Unable to create account",
+      );
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -32,6 +44,8 @@ export default function RegisterPage() {
       }}
     >
       <h1 style={{ marginTop: 0 }}>Become a member</h1>
+      {error ? <p role="alert">{error}</p> : null}
+      {message ? <p role="status">{message}</p> : null}
       <form onSubmit={handleSubmit} style={{ display: "grid", gap: "1rem" }}>
         <input
           value={fullName}
@@ -56,6 +70,8 @@ export default function RegisterPage() {
         />
         <input
           type="password"
+          value={password}
+          onChange={(event) => setPassword(event.target.value)}
           placeholder="Password"
           style={{
             padding: "0.85rem",
@@ -65,6 +81,7 @@ export default function RegisterPage() {
         />
         <button
           type="submit"
+          disabled={submitting}
           style={{
             background: "#22c55e",
             color: "white",
@@ -75,7 +92,7 @@ export default function RegisterPage() {
             cursor: "pointer",
           }}
         >
-          Create account
+          {submitting ? "Creating account..." : "Create account"}
         </button>
       </form>
 

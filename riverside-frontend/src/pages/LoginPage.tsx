@@ -7,17 +7,25 @@ export default function LoginPage() {
   const { login } = useAuth();
   const [email, setEmail] = useState("member@riverside.example");
   const [password, setPassword] = useState("Password123");
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
-  const handleSubmit = (event: FormEvent) => {
+  const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
-    login({
-      email,
-      fullName: "Aisha Member",
-      role: "member",
-      membershipTier: "Standard",
-      joinedAt: "2026-02-01T00:00:00.000Z",
-    });
-    navigate("/member");
+    setError("");
+    setSubmitting(true);
+    try {
+      await login(email, password);
+      navigate("/member");
+    } catch (submissionError) {
+      setError(
+        submissionError instanceof Error
+          ? submissionError.message
+          : "Unable to sign in",
+      );
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -32,6 +40,7 @@ export default function LoginPage() {
       }}
     >
       <h1 style={{ marginTop: 0 }}>Log in</h1>
+      {error ? <p role="alert">{error}</p> : null}
       <form onSubmit={handleSubmit} style={{ display: "grid", gap: "1rem" }}>
         <input
           type="email"
@@ -57,6 +66,7 @@ export default function LoginPage() {
         />
         <button
           type="submit"
+          disabled={submitting}
           style={{
             background: "#1d3557",
             color: "white",
@@ -67,7 +77,7 @@ export default function LoginPage() {
             cursor: "pointer",
           }}
         >
-          Sign in
+          {submitting ? "Signing in..." : "Sign in"}
         </button>
       </form>
 

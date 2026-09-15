@@ -1,6 +1,95 @@
-import { bookings, resources } from "../data/mockData";
+import { useEffect, useState, type FormEvent } from "react";
+import { apiGet, apiPatch, apiPost } from "../lib/api";
+import type { BookingRecord, EquipmentRecord, FacilityRecord } from "../types";
 
 export default function StaffDashboard() {
+  const [bookings, setBookings] = useState<BookingRecord[]>([]);
+  const [facilities, setFacilities] = useState<FacilityRecord[]>([]);
+  const [equipment, setEquipment] = useState<EquipmentRecord[]>([]);
+  const [status, setStatus] = useState<"loading" | "ready" | "error">(
+    "loading",
+  );
+  const [message, setMessage] = useState("");
+  const [rejectingId, setRejectingId] = useState<string | null>(null);
+  const [staffNote, setStaffNote] = useState("");
+  const [resourceName, setResourceName] = useState("");
+  const [resourceDescription, setResourceDescription] = useState("");
+  const [resourceType, setResourceType] = useState<"facility" | "equipment">(
+    "facility",
+  );
+  const [resourceCapacity, setResourceCapacity] = useState("");
+  const [resourceQuantity, setResourceQuantity] = useState("1");
+
+  async function loadData() {
+    const [bookingResponse, facilityResponse, equipmentResponse] =
+      await Promise.all([
+        apiGet<{ bookings: BookingRecord[] }>("/bookings"),
+        apiGet<{ facilities: FacilityRecord[] }>("/facilities"),
+        apiGet<{ equipment: EquipmentRecord[] }>("/equipment"),
+      ]);
+    setBookings(bookingResponse.bookings);
+    setFacilities(facilityResponse.facilities);
+    setEquipment(equipmentResponse.equipment);
+  }
+
+  useEffect(() => {
+    loadData()
+      .then(() => setStatus("ready"))
+      .catch(() => setStatus("error"));
+  }, []);
+
+  async function updateBooking(id: string, action: "approve" | "reject") {
+    if (action === "reject" && !staffNote.trim()) {
+      setMessage("A note is required when rejecting a booking.");
+      return;
+    }
+    try {
+      await apiPatch(`/bookings/${id}/${action}`, {
+        staff_note: staffNote.trim() || "Approved",
+      });
+      setStaffNote("");
+      setRejectingId(null);
+      setMessage(`Booking ${action}d successfully.`);
+      await loadData();
+    } catch (error) {
+      setMessage(
+        error instanceof Error ? error.message : `Unable to ${action} booking`,
+      );
+    }
+  }
+
+  async function createResource(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    try {
+      if (resourceType === "facility") {
+        await apiPost("/facilities", {
+          name: resourceName,
+          description: resourceDescription || undefined,
+          capacity: Number(resourceCapacity),
+          hourly_rate: 0,
+          active: true,
+        });
+      } else {
+        await apiPost("/equipment", {
+          name: resourceName,
+          description: resourceDescription || undefined,
+          quantity: Number(resourceQuantity),
+          active: true,
+        });
+      }
+      setResourceName("");
+      setResourceDescription("");
+      setResourceCapacity("");
+      setResourceQuantity("1");
+      setMessage("Resource created successfully.");
+      await loadData();
+    } catch (error) {
+      setMessage(
+        error instanceof Error ? error.message : "Unable to create resource",
+      );
+    }
+  }
+
   return (
     <div style={{ display: "grid", gap: "1.5rem" }}>
       <section
@@ -12,6 +101,11 @@ export default function StaffDashboard() {
         }}
       >
         <h1 style={{ marginTop: 0 }}>Staff dashboard</h1>
+        {status === "loading" ? <p>Loading bookings...</p> : null}
+        {status === "error" ? (
+          <p role="alert">Unable to load staff data.</p>
+        ) : null}
+        {message ? <p role="status">{message}</p> : null}
         <h3>Pending bookings</h3>
         <ul
           style={{
@@ -37,13 +131,22 @@ export default function StaffDashboard() {
                 }}
               >
                 <div>
-                  <strong>{booking.member}</strong>
-                  <div>{booking.resource}</div>
-                  <small>{booking.date}</small>
+                  <strong>
+                    {booking.profiles?.full_name ??
+                      booking.profiles?.email ??
+                      "Member"}
+                  </strong>
+                  <div>
+                    {booking.facilities?.name ??
+                      booking.equipment?.name ??
+                      "Resource"}
+                  </div>
+                  <small>{new Date(booking.start_at).toLocaleString()}</small>
                 </div>
                 <div style={{ display: "flex", gap: "0.5rem" }}>
                   <button
                     type="button"
+                    onClick={() => updateBooking(booking.id, "approve")}
                     style={{
                       background: "#22c55e",
                       color: "white",
@@ -57,6 +160,7 @@ export default function StaffDashboard() {
                   </button>
                   <button
                     type="button"
+                    onClick={() => setRejectingId(booking.id)}
                     style={{
                       background: "#ef4444",
                       color: "white",
@@ -69,8 +173,32 @@ export default function StaffDashboard() {
                     Reject
                   </button>
                 </div>
+                {rejectingId === booking.id ? (
+                  <div
+                    style={{ display: "grid", gap: "0.5rem", width: "100%" }}
+                  >
+                    <label>
+                      Rejection note
+                      <textarea
+                        value={staffNote}
+                        onChange={(event) => setStaffNote(event.target.value)}
+                        required
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => updateBooking(booking.id, "reject")}
+                    >
+                      Confirm rejection
+                    </button>
+                  </div>
+                ) : null}
               </li>
             ))}
+          {status === "ready" &&
+          !bookings.some((booking) => booking.status === "pending") ? (
+            <li>No pending bookings.</li>
+          ) : null}
         </ul>
       </section>
 
@@ -82,6 +210,57 @@ export default function StaffDashboard() {
           boxShadow: "0 8px 20px rgba(0,0,0,0.04)",
         }}
       >
+        <h3>Add resource</h3>
+        <form
+          onSubmit={createResource}
+          style={{
+            display: "grid",
+            gap: "0.6rem",
+            maxWidth: 560,
+            marginBottom: "1.5rem",
+          }}
+        >
+          <select
+            value={resourceType}
+            onChange={(event) =>
+              setResourceType(event.target.value as "facility" | "equipment")
+            }
+          >
+            <option value="facility">Facility</option>
+            <option value="equipment">Equipment</option>
+          </select>
+          <input
+            required
+            placeholder="Name"
+            value={resourceName}
+            onChange={(event) => setResourceName(event.target.value)}
+          />
+          <input
+            placeholder="Description"
+            value={resourceDescription}
+            onChange={(event) => setResourceDescription(event.target.value)}
+          />
+          {resourceType === "facility" ? (
+            <input
+              required
+              min="1"
+              type="number"
+              placeholder="Capacity"
+              value={resourceCapacity}
+              onChange={(event) => setResourceCapacity(event.target.value)}
+            />
+          ) : (
+            <input
+              required
+              min="1"
+              type="number"
+              placeholder="Quantity"
+              value={resourceQuantity}
+              onChange={(event) => setResourceQuantity(event.target.value)}
+            />
+          )}
+          <button type="submit">Add resource</button>
+        </form>
         <h3>Inventory overview</h3>
         <div
           style={{
@@ -90,7 +269,18 @@ export default function StaffDashboard() {
             gap: "1rem",
           }}
         >
-          {resources.map((resource) => (
+          {[
+            ...facilities.map((resource) => ({
+              ...resource,
+              type: "Facility",
+              detail: `Capacity: ${resource.capacity ?? "Flexible"}`,
+            })),
+            ...equipment.map((resource) => ({
+              ...resource,
+              type: "Equipment",
+              detail: `Quantity: ${resource.quantity}`,
+            })),
+          ].map((resource) => (
             <div
               key={resource.id}
               style={{
@@ -101,7 +291,7 @@ export default function StaffDashboard() {
             >
               <strong>{resource.name}</strong>
               <p>{resource.type}</p>
-              <p>{resource.availability}</p>
+              <p>{resource.detail}</p>
             </div>
           ))}
         </div>
