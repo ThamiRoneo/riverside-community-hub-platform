@@ -10,6 +10,18 @@ import {
 
 const router = Router();
 
+async function notifyBookingMember(
+  bookingId: string,
+  userId: string,
+  message: string,
+) {
+  await supabaseAdmin.from("notifications").insert({
+    user_id: userId,
+    booking_id: bookingId,
+    message,
+  });
+}
+
 router.get("/", requireAuth, async (req, res) => {
   const query = supabaseAdmin
     .from("bookings")
@@ -72,7 +84,7 @@ router.patch(
       return res.status(400).json({ error: "Invalid payload" });
     const { data: booking, error: bookingError } = await supabaseAdmin
       .from("bookings")
-      .select("facility_id, equipment_id, start_at, end_at")
+      .select("member_id, facility_id, equipment_id, start_at, end_at")
       .eq("id", req.params.id)
       .single();
     if (bookingError || !booking)
@@ -104,6 +116,11 @@ router.patch(
       .eq("id", req.params.id);
     if (error)
       return res.status(500).json({ error: "Unable to approve booking" });
+    await notifyBookingMember(
+      req.params.id,
+      booking.member_id,
+      "Your booking request was approved.",
+    );
     return res
       .status(200)
       .json({ message: `Booking ${req.params.id} approved` });
@@ -118,12 +135,25 @@ router.patch(
     const result = BookingRejectSchema.safeParse(req.body);
     if (!result.success)
       return res.status(400).json({ error: "Invalid payload" });
+    const { data: booking, error: bookingError } = await supabaseAdmin
+      .from("bookings")
+      .select("member_id")
+      .eq("id", req.params.id)
+      .single();
+    if (bookingError || !booking)
+      return res.status(404).json({ error: "Booking not found" });
+
     const { error } = await supabaseAdmin
       .from("bookings")
       .update({ status: "rejected", staff_note: result.data.staff_note })
       .eq("id", req.params.id);
     if (error)
       return res.status(500).json({ error: "Unable to reject booking" });
+    await notifyBookingMember(
+      req.params.id,
+      booking.member_id,
+      "Your booking request was rejected.",
+    );
     return res
       .status(200)
       .json({ message: `Booking ${req.params.id} rejected` });
@@ -138,6 +168,11 @@ router.patch("/:id/cancel", requireAuth, async (req, res) => {
     .eq("member_id", req.user?.id)
     .in("status", ["pending", "approved"]);
   if (error) return res.status(500).json({ error: "Unable to cancel booking" });
+  await notifyBookingMember(
+    req.params.id,
+    req.user?.id ?? "",
+    "Your booking was cancelled.",
+  );
   return res
     .status(200)
     .json({ message: `Booking ${req.params.id} cancelled` });
