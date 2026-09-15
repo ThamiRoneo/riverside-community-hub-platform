@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { supabaseAdmin } from "../config/supabase";
 import { requireAuth } from "../middleware/auth";
 import { requireRole } from "../middleware/roles";
 import {
@@ -8,8 +9,15 @@ import {
 
 const router = Router();
 
-router.get("/", (_req, res) => {
-  res.status(200).json({ campaigns: [] });
+router.get("/", async (_req, res) => {
+  const { data, error } = await supabaseAdmin
+    .from("campaigns")
+    .select("id, title, description, goal_amount, current_amount, active")
+    .eq("active", true)
+    .order("created_at", { ascending: false });
+
+  if (error) return res.status(500).json({ error: "Unable to load campaigns" });
+  return res.status(200).json({ campaigns: data ?? [] });
 });
 
 router.post("/", requireAuth, requireRole("admin"), (req, res) => {
@@ -17,12 +25,10 @@ router.post("/", requireAuth, requireRole("admin"), (req, res) => {
   if (!result.success)
     return res.status(400).json({ error: "Invalid payload" });
   console.log(`Created campaign: ${result.data.title}`);
-  res
-    .status(201)
-    .json({
-      message: "Campaign created",
-      campaign: { id: "uuid", ...result.data },
-    });
+  res.status(201).json({
+    message: "Campaign created",
+    campaign: { id: "uuid", ...result.data },
+  });
 });
 
 router.patch("/:id", requireAuth, requireRole("admin"), (req, res) => {

@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { supabaseAdmin } from "../config/supabase";
 import { requireAuth } from "../middleware/auth";
 import { requireRole } from "../middleware/roles";
 import {
@@ -8,8 +9,18 @@ import {
 
 const router = Router();
 
-router.get("/", (_req, res) => {
-  res.status(200).json({ programmes: [] });
+router.get("/", async (_req, res) => {
+  const { data, error } = await supabaseAdmin
+    .from("programmes")
+    .select(
+      "id, title, description, age_range, schedule_info, image_url, active",
+    )
+    .eq("active", true)
+    .order("title");
+
+  if (error)
+    return res.status(500).json({ error: "Unable to load programmes" });
+  return res.status(200).json({ programmes: data ?? [] });
 });
 
 router.post("/", requireAuth, requireRole("admin"), (req, res) => {
@@ -17,12 +28,10 @@ router.post("/", requireAuth, requireRole("admin"), (req, res) => {
   if (!result.success)
     return res.status(400).json({ error: "Invalid payload" });
   console.log(`Created programme: ${result.data.title}`);
-  res
-    .status(201)
-    .json({
-      message: "Programme created",
-      programme: { id: "uuid", ...result.data },
-    });
+  res.status(201).json({
+    message: "Programme created",
+    programme: { id: "uuid", ...result.data },
+  });
 });
 
 router.patch("/:id", requireAuth, requireRole("admin"), (req, res) => {

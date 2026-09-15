@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { supabaseAdmin } from "../config/supabase";
 import { requireAuth } from "../middleware/auth";
 import { requireRole } from "../middleware/roles";
 import {
@@ -8,8 +9,15 @@ import {
 
 const router = Router();
 
-router.get("/", (_req, res) => {
-  res.status(200).json({ equipment: [] });
+router.get("/", async (_req, res) => {
+  const { data, error } = await supabaseAdmin
+    .from("equipment")
+    .select("id, name, description, quantity, active")
+    .eq("active", true)
+    .order("name");
+
+  if (error) return res.status(500).json({ error: "Unable to load equipment" });
+  return res.status(200).json({ equipment: data ?? [] });
 });
 
 router.post("/", requireAuth, requireRole("staff", "admin"), (req, res) => {
@@ -17,12 +25,10 @@ router.post("/", requireAuth, requireRole("staff", "admin"), (req, res) => {
   if (!result.success)
     return res.status(400).json({ error: "Invalid payload" });
   console.log(`Created equipment: ${result.data.name}`);
-  res
-    .status(201)
-    .json({
-      message: "Equipment created",
-      equipment: { id: "uuid", ...result.data },
-    });
+  res.status(201).json({
+    message: "Equipment created",
+    equipment: { id: "uuid", ...result.data },
+  });
 });
 
 router.patch("/:id", requireAuth, requireRole("staff", "admin"), (req, res) => {
