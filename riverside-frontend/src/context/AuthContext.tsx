@@ -8,16 +8,18 @@ import {
   type ReactNode,
 } from "react";
 import type { Role, User } from "../types";
+import { apiGet } from "../lib/api";
+import { supabase } from "../lib/supabase";
 
 interface AuthContextValue {
   user: User | null;
   isAuthenticated: boolean;
-  login: (
-    userData: Pick<User, "email" | "fullName" | "role"> & Partial<User>,
-  ) => void;
+  login: (email: string, password: string) => Promise<void>;
   register: (
-    userData: Pick<User, "email" | "fullName" | "role"> & Partial<User>,
-  ) => void;
+    fullName: string,
+    email: string,
+    password: string,
+  ) => Promise<void>;
   logout: () => void;
 }
 
@@ -32,6 +34,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   });
 
   useEffect(() => {
+    let mounted = true;
+
+    async function restoreSession() {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      if (!mounted || !session) return;
+
+      const response = await apiGet<{
+        user: { id: string; email?: string; role: Role };
+      }>("/auth/me");
+      setUser({
+        id: response.user.id,
+        email: response.user.email ?? session.user.email ?? "",
+        fullName: session.user.user_metadata.full_name ?? "Riverside member",
+        role: response.user.role,
+        membershipTier: "Standard",
+        joinedAt: session.user.created_at,
+      });
+    }
+
+    void restoreSession();
+    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!session) setUser(null);
+    });
+
+    return () => {
+      mounted = false;
+      data.subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
     if (user) {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(user));
       return;
@@ -40,34 +76,50 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.removeItem(STORAGE_KEY);
   }, [user]);
 
-  const login = useCallback(
-    (userData: Pick<User, "email" | "fullName" | "role"> & Partial<User>) => {
-      const nextUser: User = {
-        id: userData.id ?? "local-user",
-        email: userData.email,
-        fullName: userData.fullName,
-        role: userData.role ?? "member",
-        membershipTier: userData.membershipTier ?? "Standard",
-        joinedAt: userData.joinedAt ?? new Date().toISOString(),
-      };
+  const login = useCallback(async (email: string, password: string) => {
+    const { error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+    if (error) throw error;
 
-      setUser(nextUser);
-    },
-    [],
-  );
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session) throw new Error("No Supabase session was created");
+
+    const response = await apiGet<{
+      user: { id: string; email?: string; role: Role };
+    }>("/auth/me");
+    setUser({
+      id: response.user.id,
+      email: response.user.email ?? email,
+      fullName: session.user.user_metadata.full_name ?? "Riverside member",
+      role: response.user.role,
+      membershipTier: "Standard",
+      joinedAt: session.user.created_at,
+    });
+  }, []);
 
   const register = useCallback(
-    (userData: Pick<User, "email" | "fullName" | "role"> & Partial<User>) => {
-      const nextUser: User = {
-        id: userData.id ?? `member-${Date.now()}`,
-        email: userData.email,
-        fullName: userData.fullName,
-        role: userData.role ?? "member",
-        membershipTier: userData.membershipTier ?? "Standard",
-        joinedAt: userData.joinedAt ?? new Date().toISOString(),
-      };
+    async (fullName: string, email: string, password: string) => {
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: { data: { full_name: fullName } },
+      });
+      if (error) throw error;
 
-      setUser(nextUser);
+      if (data.session && data.user) {
+        setUser({
+          id: data.user.id,
+          email,
+          fullName,
+          role: "member",
+          membershipTier: "Standard",
+          joinedAt: data.user.created_at,
+        });
+      }
     },
     [],
   );
