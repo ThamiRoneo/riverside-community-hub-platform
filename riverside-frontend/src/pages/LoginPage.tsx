@@ -8,15 +8,9 @@ export default function LoginPage() {
   const [email, setEmail] = useState("member@riverside.example");
   const [password, setPassword] = useState("Password123");
 
-  const handleSubmit = (event: FormEvent) => {
+  const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
-    login({
-      email,
-      fullName: "Aisha Member",
-      role: "member",
-      membershipTier: "Standard",
-      joinedAt: "2026-02-01T00:00:00.000Z",
-    });
+    await login(email, password);
     navigate("/member");
   };
 
