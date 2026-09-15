@@ -76,3 +76,17 @@ export interface CampaignRecord {
   goal_amount: number | null;
   current_amount: number;
 }
+
+export interface BookingRecord {
+  id: string;
+  member_id: string;
+  facility_id: string | null;
+  equipment_id: string | null;
+  start_at: string;
+  end_at: string;
+  status: "pending" | "approved" | "rejected" | "cancelled";
+  staff_note?: string | null;
+  profiles?: { full_name?: string; email?: string } | null;
+  facilities?: { name?: string } | null;
+  equipment?: { name?: string } | null;
+}
