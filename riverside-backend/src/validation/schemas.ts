@@ -26,6 +26,11 @@ export const MemberUpdateSchema = z.object({
   role: z.enum(["visitor", "member", "staff", "admin"]),
 });
 
+export const MemberProfileUpdateSchema = z.object({
+  full_name: z.string().min(2).optional(),
+  phone: z.string().max(30).optional(),
+});
+
 export const BookingCreateSchema = z
   .object({
     facility_id: z.string().uuid().optional(),
