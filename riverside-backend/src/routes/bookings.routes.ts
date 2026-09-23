@@ -26,7 +26,7 @@ router.get("/", requireAuth, async (req, res) => {
   const query = supabaseAdmin
     .from("bookings")
     .select(
-      "id, member_id, facility_id, equipment_id, start_at, end_at, status, staff_note, created_at, profiles(full_name, email), facilities(name), equipment(name)",
+      "id, member_id, facility_id, equipment_id, start_at, end_at, status, staff_note, created_at, profiles(full_name), facilities(name), equipment(name)",
     )
     .order("start_at");
 

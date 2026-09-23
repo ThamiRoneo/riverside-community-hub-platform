@@ -5,9 +5,9 @@ import { useAuth } from "../context/AuthContext";
 export default function RegisterPage() {
   const navigate = useNavigate();
   const { register } = useAuth();
-  const [fullName, setFullName] = useState("Aisha Member");
-  const [email, setEmail] = useState("member@riverside.example");
-  const [password, setPassword] = useState("Password123");
+  const [fullName, setFullName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -39,13 +39,15 @@ export default function RegisterPage() {
         margin: "0 auto",
         background: "white",
         borderRadius: 20,
-        padding: "2rem",
+        padding: "5rem",
         boxShadow: "0 10px 30px rgba(0,0,0,0.05)",
       }}
     >
-      <h1 style={{ marginTop: 0 }}>Become a member</h1>
-      {error ? <p role="alert">{error}</p> : null}
-      {message ? <p role="status">{message}</p> : null}
+      <h1 style={{
+        marginTop: 0,
+        textAlign: "center" }}>Become a member</h1>
+      {error ? <p style={{ textAlign: "center", color: "red" }} role="alert">{error}</p> : null}
+      {message ? <p style={{ textAlign: "center", color: "red" }} role="status">{message}</p> : null}
       <form onSubmit={handleSubmit} style={{ display: "grid", gap: "1rem" }}>
         <input
           value={fullName}
