@@ -48,9 +48,9 @@ async function upsert(table, row, match) {
 (async () => {
   console.log("Seeding auth.users + profiles...");
   const members = [
-    { id: UUIDS.aisha, email: "aisha@riverside.example", full_name: "Aisha M.", role: "member", phone: "+27 11 000 0001" },
-    { id: UUIDS.david, email: "david@riverside.example", full_name: "David L.", role: "member", phone: "+27 11 000 0002" },
-    { id: UUIDS.nandi, email: "nandi@riverside.example", full_name: "Nandi P.", role: "member", phone: "+27 11 000 0003" },
+    { id: UUIDS.aisha, email: "aisha@riverside.example", full_name: "Aisha M.", role: "member", phone: "+27 11 000 0001", membership_tier: "free" },
+    { id: UUIDS.david, email: "david@riverside.example", full_name: "David L.", role: "member", phone: "+27 11 000 0002", membership_tier: "free" },
+    { id: UUIDS.nandi, email: "nandi@riverside.example", full_name: "Nandi P.", role: "member", phone: "+27 11 000 0003", membership_tier: "free" },
     { id: UUIDS.staff, email: "staff@riverside.example", full_name: "Riverside Staff", role: "staff", phone: "+27 11 000 0004" },
     { id: UUIDS.admin, email: "admin@riverside.example", full_name: "Riverside Admin", role: "admin", phone: "+27 11 000 0005" },
   ];
@@ -75,6 +75,7 @@ async function upsert(table, row, match) {
     await upsert("profiles", {
       id: m.id, full_name: m.full_name, phone: m.phone, role: m.role,
       membership_expires_at: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
+      membership_tier: m.membership_tier || null
     }, "id");
   }
   console.log("  profiles done");
@@ -117,8 +118,6 @@ async function upsert(table, row, match) {
   }, { onConflict: "id" });
   if (campErr) throw new Error("campaign: " + campErr.message);
 
-  // Mock shows currentAmount = 28600. campaigns.current_amount is trigger-maintained
-  // (apply_donation_to_campaign), so we insert two guest donations that sum to 28600.
   console.log("Seeding donations (guest, to reach campaign total 28600)...");
   const donations = [
     { id: UUIDS.don1, campaign_id: UUIDS.camp1, donor_id: null, type: "one_off", status: "pending_followup", amount: 20000, donor_name: "Community supporter", donor_email: "supporter@riverside.example", donor_phone: null, anonymous: false, receipt_opt_in: true, staff_note: null },
