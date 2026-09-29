@@ -63,19 +63,23 @@ export default function AdminDashboard() {
       .catch(() => setStatus("error"));
   }, []);
 
+  // The API contract makes staff_note optional for follow-up, so the note is
+  // submitted only when one was typed.
   async function completeFollowUp(id: string) {
     const staffNote = followUpNote[id]?.trim();
-    if (!staffNote) {
-      setActionMessage("Add a staff note before completing follow-up.");
-      return;
-    }
 
     try {
-      await apiPatch(`/donations/${id}/follow-up`, { staff_note: staffNote });
+      await apiPatch(`/donations/${id}/follow-up`, {
+        ...(staffNote ? { staff_note: staffNote } : {}),
+      });
       setDonations((current) =>
         current.map((donation) =>
           donation.id === id
-            ? { ...donation, status: "followed_up", staff_note: staffNote }
+            ? {
+                ...donation,
+                status: "followed_up",
+                ...(staffNote ? { staff_note: staffNote } : {}),
+              }
             : donation,
         ),
       );
