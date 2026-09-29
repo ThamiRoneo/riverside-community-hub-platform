@@ -70,10 +70,12 @@ router.patch(
   },
 );
 
+// Contract: DELETE /api/resources/:id is admin only. Staff may create and
+// edit resources, but deactivating one removes it from public booking.
 router.delete(
   "/:id",
   requireAuth,
-  requireRole("staff", "admin"),
+  requireRole("admin"),
   async (req, res) => {
     const { error } = await supabaseAdmin
       .from("facilities")
