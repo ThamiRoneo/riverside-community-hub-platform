@@ -1,6 +1,7 @@
+import crypto from "node:crypto";
 import { Router } from "express";
 import { supabaseAdmin } from "../config/supabase";
-import { sendRowError } from "../lib/http";
+import { isForeignKeyViolation, sendRowError } from "../lib/http";
 import { attachUserIfPresent, requireAuth } from "../middleware/auth";
 import { requireRole } from "../middleware/roles";
 import { DonationCreateSchema } from "../validation/schemas";
@@ -84,25 +85,46 @@ router.get(
   },
 );
 
+/**
+ * Reference returned to a donor in the POST response. Minted once on insert
+ * so it is stable and unique.
+ */
+function mintReceiptReference(): string {
+  const year = new Date().getUTCFullYear();
+  return `RCH-${year}-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
+}
+
+// POST /api/donations
+// Contract: one_off settles immediately as "paid"; a pledge_intent is a promise
+// to give and lands in the staff follow-up queue as "pending_followup".
 router.post("/", attachUserIfPresent, async (req, res) => {
   const result = DonationCreateSchema.safeParse(req.body);
   if (!result.success)
     return res.status(400).json({ error: "Invalid payload" });
 
+  const { type } = result.data;
+  const status = type === "pledge_intent" ? "pending_followup" : "paid";
+
   const { data, error } = await supabaseAdmin
     .from("donations")
     .insert({
       ...result.data,
+      status,
+      receipt_reference: mintReceiptReference(),
       donor_id: req.user?.id ?? null,
     })
-    .select(
-      "id, campaign_id, amount, type, anonymous, receipt_opt_in, created_at",
-    )
+    .select("id, status, receipt_reference")
     .single();
 
+  // A campaign that does not exist is a client error, not a server fault.
+  if (isForeignKeyViolation(error))
+    return res
+      .status(404)
+      .json({ error: "Campaign not found for this donation" });
   if (error)
     return res.status(500).json({ error: "Unable to create donation" });
-  return res.status(201).json({ message: "Donation created", donation: data });
+
+  return res.status(201).json(data);
 });
 
 // PATCH /api/donations/:id/follow-up
