@@ -8,6 +8,37 @@ export interface ApiResponse<T> {
   error?: string;
 }
 
+// Verifies the signed-in user's password and returns a short-lived step-up
+// token for operations the API gates behind re-authentication.
+export async function reauthenticate(password: string): Promise<string> {
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+
+  const { data: userData } = await supabase.auth.getUser();
+  const email = userData.user?.email;
+  if (!session?.access_token || !email) {
+    throw new Error("You must be signed in to perform this action.");
+  }
+
+  const response = await fetch(`${API_BASE_URL}/auth/reauthenticate`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${session.access_token}`,
+    },
+    body: JSON.stringify({ email, password }),
+  });
+
+  if (!response.ok) throw await apiError(response);
+
+  const body = (await response.json()) as { reauth_token?: string };
+  if (!body.reauth_token) {
+    throw new Error("Re-authentication did not return a token.");
+  }
+  return body.reauth_token;
+}
+
 export async function apiGet<T>(path: string): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     headers: await authHeaders(),
@@ -39,12 +70,14 @@ export async function apiPost<T>(
 export async function apiPatch<T>(
   path: string,
   payload: Record<string, unknown>,
+  extraHeaders: Record<string, string> = {},
 ): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "PATCH",
     headers: {
       "Content-Type": "application/json",
       ...(await authHeaders()),
+      ...extraHeaders,
     },
     body: JSON.stringify(payload),
   });
