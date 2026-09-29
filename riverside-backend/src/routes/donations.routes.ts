@@ -43,10 +43,13 @@ router.get(
   },
 );
 
+// GET /api/donations/export
+// Contract restricts the full donor export to admins. Staff keep the
+// filtered JSON list but not the identifying CSV.
 router.get(
-  "/export.csv",
+  "/export",
   requireAuth,
-  requireRole("staff", "admin"),
+  requireRole("admin"),
   async (_req, res) => {
     const { data, error } = await supabaseAdmin
       .from("donations")
