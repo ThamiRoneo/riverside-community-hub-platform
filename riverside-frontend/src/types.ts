@@ -125,12 +125,22 @@ export interface MemberProfileRecord {
   expiring_soon: boolean;
 }
 
+// Donation types and statuses follow the API contract and must match the
+// public.donation_type / donation_status enums (migration 0005).
+export type DonationType = "one_off" | "pledge_intent";
+export type DonationStatus =
+  | "paid"
+  | "pending_followup"
+  | "followed_up"
+  | "cancelled";
+
 export interface DonationRecord {
   id: string;
   campaign_id: string;
   amount: number;
-  type: "one_off" | "monthly";
-  status: "pending_followup" | "followed_up";
+  type: DonationType;
+  status: DonationStatus;
+  receipt_reference: string | null;
   donor_name: string | null;
   donor_email: string | null;
   anonymous: boolean;
