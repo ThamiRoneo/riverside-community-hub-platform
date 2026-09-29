@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { supabaseAdmin } from "../config/supabase";
+import { sendRowError } from "../lib/http";
 import { requireAuth } from "../middleware/auth";
 
 const router = Router();
@@ -54,7 +55,12 @@ router.patch("/:id/read", requireAuth, async (req, res) => {
     .single();
 
   if (error || !data)
-    return res.status(404).json({ error: "Notification not found" });
+    return sendRowError(
+      res,
+      error,
+      "Notification not found",
+      "Unable to mark notification read",
+    );
   return res.status(200).json({ id: data.id, read: data.read });
 });
 
