@@ -1,6 +1,6 @@
 import { type FormEvent, useEffect, useState } from "react";
 import { apiGet, apiPost } from "../lib/api";
-import type { CampaignRecord } from "../types";
+import type { CampaignRecord, DonationType } from "../types";
 
 export default function DonatePage() {
   const [campaign, setCampaign] = useState<CampaignRecord | null>(null);
@@ -11,9 +11,7 @@ export default function DonatePage() {
   const [donorName, setDonorName] = useState("");
   const [donorEmail, setDonorEmail] = useState("");
   const [donorPhone, setDonorPhone] = useState("");
-  const [donationType, setDonationType] = useState<"one_off" | "monthly">(
-    "one_off",
-  );
+  const [donationType, setDonationType] = useState<DonationType>("one_off");
   const [anonymous, setAnonymous] = useState(false);
   const [receiptOptIn, setReceiptOptIn] = useState(false);
   const [submitStatus, setSubmitStatus] = useState<
@@ -206,7 +204,7 @@ export default function DonatePage() {
           <select
             value={donationType}
             onChange={(event) =>
-              setDonationType(event.target.value as "one_off" | "monthly")
+              setDonationType(event.target.value as DonationType)
             }
             style={{
               padding: "0.8rem",
@@ -215,7 +213,7 @@ export default function DonatePage() {
             }}
           >
             <option value="one_off">One-off donation</option>
-            <option value="monthly">Adopt a parcel pledge</option>
+            <option value="pledge_intent">Adopt a parcel pledge</option>
           </select>
           <label
             style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}

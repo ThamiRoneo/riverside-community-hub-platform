@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { supabaseAdmin } from "../config/supabase";
+import { isForeignKeyViolation, sendRowError } from "../lib/http";
 import { requireAuth } from "../middleware/auth";
 import { requireRole } from "../middleware/roles";
 import {
@@ -45,7 +46,12 @@ router.patch("/:id", requireAuth, requireRole("admin"), async (req, res) => {
     .select()
     .single();
   if (error || !data)
-    return res.status(404).json({ error: "Campaign not found" });
+    return sendRowError(
+      res,
+      error,
+      "Campaign not found",
+      "Unable to update campaign",
+    );
   return res.status(200).json({ message: "Campaign updated", campaign: data });
 });
 
@@ -54,6 +60,13 @@ router.delete("/:id", requireAuth, requireRole("admin"), async (req, res) => {
     .from("campaigns")
     .delete()
     .eq("id", req.params.id);
+
+  // Donations reference their campaign, so a campaign that has received any
+  // cannot be removed. That is a conflict, not a server fault.
+  if (isForeignKeyViolation(error))
+    return res.status(409).json({
+      error: "Campaign has donations and cannot be deleted",
+    });
   if (error)
     return res.status(500).json({ error: "Unable to delete campaign" });
   return res.status(204).send();

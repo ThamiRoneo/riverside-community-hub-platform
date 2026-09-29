@@ -1,0 +1,1012 @@
+import assert from "node:assert/strict";
+import { after, before, describe, test } from "node:test";
+import type { AddressInfo } from "node:net";
+import type { Server } from "node:http";
+
+import app from "../src/app";
+import { supabaseAdmin } from "../src/config/supabase";
+
+/**
+ * Regression suite for the auth + membership surface.
+ *
+ * These run against the real Supabase project, because the bugs they guard
+ * (trigger collision, PostgREST empty-update rejection, missing re-auth) are
+ * only observable against a real database. Every test that creates a user
+ * deletes it in the cleanup hook.
+ */
+
+const ADMIN = { email: "admin@riverside.example", password: "Password123" };
+const TEST_PASSWORD = "Password123";
+
+let server: Server;
+let baseUrl: string;
+let testUserId: string | null = null;
+
+const uniqueEmail = () => `authtest${Date.now()}${Math.floor(Math.random() * 1e6)}@riverside.com`;
+
+/** Narrows a seed-dependent lookup so a missing row fails loudly. */
+function required<T>(value: T | null | undefined, label: string): T {
+  if (value === null || value === undefined) {
+    throw new Error(`expected ${label} in the seeded database`);
+  }
+  return value;
+}
+
+/** Removes a booking plus the notifications the API created for it. */
+async function removeProbeBooking(bookingId: string) {
+  await supabaseAdmin.from("notifications").delete().eq("booking_id", bookingId);
+  await supabaseAdmin.from("bookings").delete().eq("id", bookingId);
+}
+
+/**
+ * Creates a donation and returns a cleanup that removes it.
+ *
+ * campaign.current_amount is maintained by an insert-only trigger, so the
+ * total has to be restored explicitly when a probe donation is removed.
+ */
+async function createProbeDonation(overrides: Record<string, unknown> = {}) {
+  const campaign = required(
+    (
+      await supabaseAdmin
+        .from("campaigns")
+        .select("id, current_amount")
+        .eq("active", true)
+        .limit(1)
+        .single()
+    ).data,
+    "an active campaign",
+  );
+
+  const { data, error } = await supabaseAdmin
+    .from("donations")
+    .insert({
+      campaign_id: campaign.id,
+      amount: 1,
+      type: "one_off",
+      status: "pending_followup",
+      donor_name: "Probe donor",
+      donor_email: "probe@riverside.example",
+      anonymous: false,
+      receipt_opt_in: false,
+      ...overrides,
+    })
+    .select()
+    .single();
+
+  if (error || !data) throw new Error(`probe donation failed: ${error?.message}`);
+
+  return {
+    donation: data,
+    async cleanup() {
+      await supabaseAdmin.from("donations").delete().eq("id", data.id);
+      await supabaseAdmin
+        .from("campaigns")
+        .update({ current_amount: campaign.current_amount })
+        .eq("id", campaign.id);
+    },
+  };
+}
+
+async function login(email: string, password: string) {
+  const response = await fetch(`${baseUrl}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  assert.equal(response.status, 200, "login should succeed");
+  const body = await response.json();
+  return body.session.access_token as string;
+}
+
+async function call(
+  path: string,
+  options: { method?: string; token?: string; body?: unknown; headers?: Record<string, string> } = {},
+) {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: options.method ?? "GET",
+    headers: {
+      "Content-Type": "application/json",
+      ...(options.token ? { Authorization: `Bearer ${options.token}` } : {}),
+      ...options.headers,
+    },
+    ...(options.body ? { body: JSON.stringify(options.body) } : {}),
+  });
+  const text = await response.text();
+  return {
+    status: response.status,
+    body: text ? JSON.parse(text) : null,
+  };
+}
+
+before(async () => {
+  await new Promise<void>((resolve) => {
+    server = app.listen(0, resolve);
+  });
+  const { port } = server.address() as AddressInfo;
+  baseUrl = `http://127.0.0.1:${port}`;
+});
+
+after(async () => {
+  if (testUserId) {
+    await supabaseAdmin.auth.admin.deleteUser(testUserId);
+    testUserId = null;
+  }
+  await new Promise<void>((resolve, reject) =>
+    server.close((error) => (error ? reject(error) : resolve())),
+  );
+});
+
+describe("signup", () => {
+  test("creates a profile without colliding with the auth trigger", async (t) => {
+    const email = uniqueEmail();
+    const result = await call("/api/auth/signup", {
+      method: "POST",
+      body: { email, password: TEST_PASSWORD, full_name: "Auth Test" },
+    });
+
+    // Supabase rate-limits outbound signup mail per project. That is an
+    // environment constraint, not a regression, so do not report it as one.
+    if (result.status === 400 && /rate limit/i.test(JSON.stringify(result.body))) {
+      t.skip(`signup rate limited by Supabase: ${result.body.error}`);
+      return;
+    }
+
+    assert.equal(
+      result.status,
+      201,
+      `signup must not fail on a duplicate profile key: ${JSON.stringify(result.body)}`,
+    );
+    testUserId = result.body.user.id;
+
+    const { data, error } = await supabaseAdmin
+      .from("profiles")
+      .select("full_name, role, membership_tier, membership_expires_at")
+      .eq("id", testUserId)
+      .single();
+
+    assert.equal(error, null);
+    assert.equal(data.full_name, "Auth Test");
+    assert.equal(data.role, "member");
+    assert.equal(data.membership_tier, "free");
+    // Regression: this was 30 *hours*, not 30 days.
+    const days = (Date.parse(data.membership_expires_at) - Date.now()) / 86_400_000;
+    assert.ok(
+      days > 29 && days < 31,
+      `membership should last ~30 days, got ${days.toFixed(2)}`,
+    );
+  });
+});
+
+describe("PATCH /api/profile/me", () => {
+  test("updates contact_phone on its own", async () => {
+    const token = await login(ADMIN.email, ADMIN.password);
+    const phone = "+27 11 000 0005";
+
+    const result = await call("/api/profile/me", {
+      method: "PATCH",
+      token,
+      body: { contact_phone: phone },
+    });
+
+    // Regression: an all-undefined update was rejected by PostgREST and
+    // surfaced as a misleading 404 "Profile not found".
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    assert.equal(result.body.contact_phone, phone);
+  });
+
+  test("rejects an empty patch with 400, not 404", async () => {
+    const token = await login(ADMIN.email, ADMIN.password);
+    const result = await call("/api/profile/me", {
+      method: "PATCH",
+      token,
+      body: {},
+    });
+
+    assert.equal(result.status, 400);
+  });
+
+  test("does not wipe contact_phone when only full_name is sent", async () => {
+    const token = await login(ADMIN.email, ADMIN.password);
+    const before = await call("/api/profile/me", { token });
+    const expectedPhone = before.body.contact_phone;
+
+    const result = await call("/api/profile/me", {
+      method: "PATCH",
+      token,
+      body: { full_name: "Riverside Admin" },
+    });
+
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    assert.equal(result.body.contact_phone, expectedPhone);
+  });
+});
+
+describe("GET /api/profile/me", () => {
+  test("returns the contract shape with a computed expiring_soon", async () => {
+    const token = await login(ADMIN.email, ADMIN.password);
+    const result = await call("/api/profile/me", { token });
+
+    assert.equal(result.status, 200);
+    assert.equal(typeof result.body.expiring_soon, "boolean");
+    assert.ok("contact_phone" in result.body);
+    assert.ok("joined_at" in result.body);
+  });
+});
+
+describe("re-authentication", () => {
+  test("rejects a wrong password", async () => {
+    const token = await login(ADMIN.email, ADMIN.password);
+    const result = await call("/api/auth/reauthenticate", {
+      method: "POST",
+      token,
+      body: { email: ADMIN.email, password: "DefinitelyNotThePassword" },
+    });
+
+    // Regression: this returned 200 without ever checking the password.
+    assert.equal(result.status, 401, JSON.stringify(result.body));
+  });
+
+  test("rejects credentials belonging to a different account", async () => {
+    const token = await login(ADMIN.email, ADMIN.password);
+    const result = await call("/api/auth/reauthenticate", {
+      method: "POST",
+      token,
+      body: { email: "aisha@riverside.example", password: TEST_PASSWORD },
+    });
+
+    assert.equal(result.status, 401, JSON.stringify(result.body));
+  });
+
+  test("issues a step-up token for the correct password", async () => {
+    const token = await login(ADMIN.email, ADMIN.password);
+    const result = await call("/api/auth/reauthenticate", {
+      method: "POST",
+      token,
+      body: { email: ADMIN.email, password: ADMIN.password },
+    });
+
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    assert.equal(typeof result.body.reauth_token, "string");
+  });
+});
+
+describe("PATCH /api/members/:id/role", () => {
+  const targetId = "11111111-1111-4111-8111-111111111111";
+
+  test("is refused without a step-up token", async () => {
+    const token = await login(ADMIN.email, ADMIN.password);
+    const result = await call(`/api/members/${targetId}/role`, {
+      method: "PATCH",
+      token,
+      body: { role: "staff" },
+    });
+
+    assert.equal(result.status, 401, JSON.stringify(result.body));
+  });
+
+  test("is refused when the step-up token is tampered with", async () => {
+    const token = await login(ADMIN.email, ADMIN.password);
+    const reauth = await call("/api/auth/reauthenticate", {
+      method: "POST",
+      token,
+      body: { email: ADMIN.email, password: ADMIN.password },
+    });
+
+    const result = await call(`/api/members/${targetId}/role`, {
+      method: "PATCH",
+      token,
+      body: { role: "staff" },
+      headers: { "X-Reauth-Token": `${reauth.body.reauth_token}tampered` },
+    });
+
+    assert.equal(result.status, 401, JSON.stringify(result.body));
+  });
+
+  test("succeeds with a valid step-up token, then restores the role", async () => {
+    const token = await login(ADMIN.email, ADMIN.password);
+    const reauth = await call("/api/auth/reauthenticate", {
+      method: "POST",
+      token,
+      body: { email: ADMIN.email, password: ADMIN.password },
+    });
+    const headers = { "X-Reauth-Token": reauth.body.reauth_token as string };
+
+    const promote = await call(`/api/members/${targetId}/role`, {
+      method: "PATCH",
+      token,
+      body: { role: "staff" },
+      headers,
+    });
+    assert.equal(promote.status, 200, JSON.stringify(promote.body));
+
+    const restore = await call(`/api/members/${targetId}/role`, {
+      method: "PATCH",
+      token,
+      body: { role: "member" },
+      headers,
+    });
+    assert.equal(restore.status, 200, JSON.stringify(restore.body));
+    assert.equal(restore.body.member.role, "member");
+  });
+
+  test("rejects the phantom 'visitor' role at the schema", async () => {
+    const token = await login(ADMIN.email, ADMIN.password);
+    const reauth = await call("/api/auth/reauthenticate", {
+      method: "POST",
+      token,
+      body: { email: ADMIN.email, password: ADMIN.password },
+    });
+
+    const result = await call(`/api/members/${targetId}/role`, {
+      method: "PATCH",
+      token,
+      body: { role: "visitor" },
+      headers: { "X-Reauth-Token": reauth.body.reauth_token as string },
+    });
+
+    // Regression: the DB enum rejected it behind a misleading 404.
+    assert.equal(result.status, 400, JSON.stringify(result.body));
+  });
+});
+
+describe("GET /api/members", () => {
+  test("applies the status filter instead of ignoring it", async () => {
+    const token = await login(ADMIN.email, ADMIN.password);
+    const active = await call("/api/members?status=active&page_size=100", { token });
+    const expired = await call("/api/members?status=expired&page_size=100", { token });
+
+    assert.equal(active.status, 200);
+    assert.equal(expired.status, 200);
+
+    for (const member of active.body.members) {
+      assert.ok(
+        member.membership_expires_at === null ||
+          Date.parse(member.membership_expires_at) >= Date.now(),
+        `${member.full_name} should not be expired`,
+      );
+    }
+    for (const member of expired.body.members) {
+      assert.ok(
+        Date.parse(member.membership_expires_at) < Date.now(),
+        `${member.full_name} should have a past expiry`,
+      );
+    }
+
+    // A filter that is silently dropped returns the same page for every
+    // value, so the two buckets must not overlap.
+    const activeIds = new Set(active.body.members.map((m: { id: string }) => m.id));
+    for (const member of expired.body.members) {
+      assert.ok(!activeIds.has(member.id), "active and expired must not overlap");
+    }
+  });
+
+  test("rejects an unknown status value with 400", async () => {
+    const token = await login(ADMIN.email, ADMIN.password);
+    const result = await call("/api/members?status=bogus", { token });
+
+    // Regression: unknown filters used to be silently dropped.
+    assert.equal(result.status, 400, JSON.stringify(result.body));
+  });
+});
+
+describe("GET /api/notifications", () => {
+  test("returns a total and honours page_size", async () => {
+    const token = await login(ADMIN.email, ADMIN.password);
+    const result = await call("/api/notifications?page_size=1", { token });
+
+    assert.equal(result.status, 200);
+    assert.equal(typeof result.body.total, "number");
+    assert.ok(result.body.notifications.length <= 1);
+  });
+
+  test("rejects an invalid unread_only value", async () => {
+    const token = await login(ADMIN.email, ADMIN.password);
+    const result = await call("/api/notifications?unread_only=maybe", { token });
+
+    assert.equal(result.status, 400, JSON.stringify(result.body));
+  });
+});
+
+describe("PATCH /api/bookings/:id/cancel", () => {
+  const MISSING = "00000000-0000-4000-8000-000000000000";
+
+  test("returns 404 for a booking that does not exist", async () => {
+    const token = await login(ADMIN.email, ADMIN.password);
+    const result = await call(`/api/bookings/${MISSING}/cancel`, {
+      method: "PATCH",
+      token,
+    });
+
+    // Regression: the update matched zero rows but the route reported success.
+    assert.equal(result.status, 404, JSON.stringify(result.body));
+  });
+
+  test("returns 403 when the booking belongs to someone else", async () => {
+    const booking = required(
+      (
+        await supabaseAdmin
+          .from("bookings")
+          .select("id")
+          .not("member_id", "is", null)
+          .limit(1)
+          .single()
+      ).data,
+      "at least one seeded booking",
+    );
+
+
+    const staffToken = await login("staff@riverside.example", "Password123");
+    const result = await call(`/api/bookings/${booking.id}/cancel`, {
+      method: "PATCH",
+      token: staffToken,
+    });
+
+    assert.equal(result.status, 403, JSON.stringify(result.body));
+  });
+
+  test("returns the contract shape on success", async () => {
+    const member = { email: "aisha@riverside.example", password: "Password123" };
+    const token = await login(member.email, member.password);
+
+    const facility = required(
+      (
+        await supabaseAdmin
+          .from("facilities")
+          .select("id")
+          .eq("active", true)
+          .limit(1)
+          .single()
+      ).data,
+      "an active facility",
+    );
+
+    const start = new Date(Date.now() + 90 * 86_400_000).toISOString();
+    const end = new Date(Date.now() + 91 * 86_400_000).toISOString();
+
+    const created = await call("/api/bookings", {
+      method: "POST",
+      token,
+      body: { facility_id: facility.id, start_at: start, end_at: end },
+    });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+
+    const bookingId = created.body.booking.id;
+    const cancelled = await call(`/api/bookings/${bookingId}/cancel`, {
+      method: "PATCH",
+      token,
+    });
+
+    assert.equal(cancelled.status, 200, JSON.stringify(cancelled.body));
+    assert.equal(cancelled.body.id, bookingId);
+    assert.equal(cancelled.body.status, "cancelled");
+
+    // Cancelling again is no longer valid and must be reported, not ignored.
+    const again = await call(`/api/bookings/${bookingId}/cancel`, {
+      method: "PATCH",
+      token,
+    });
+    assert.equal(again.status, 409, JSON.stringify(again.body));
+
+    await removeProbeBooking(bookingId);
+  });
+});
+
+describe("PATCH /api/donations/:id/follow-up", () => {
+  test("returns 404 for a donation that does not exist", async () => {
+    const token = await login(ADMIN.email, ADMIN.password);
+    const result = await call(
+      "/api/donations/00000000-0000-4000-8000-000000000000/follow-up",
+      { method: "PATCH", token, body: {} },
+    );
+
+    assert.equal(result.status, 404, JSON.stringify(result.body));
+  });
+
+  test("returns 409 for a donation that is already followed up", async () => {
+    const donation = required(
+      (
+        await supabaseAdmin
+          .from("donations")
+          .select("id")
+          .eq("status", "followed_up")
+          .limit(1)
+          .single()
+      ).data,
+      "at least one followed_up donation",
+    );
+
+
+    const token = await login(ADMIN.email, ADMIN.password);
+    const result = await call(`/api/donations/${donation.id}/follow-up`, {
+      method: "PATCH",
+      token,
+      body: { staff_note: "should not apply" },
+    });
+
+    // Regression: the transition ran from any prior state.
+    assert.equal(result.status, 409, JSON.stringify(result.body));
+  });
+
+  test("accepts a follow-up with no staff note, per the contract", async () => {
+    const probe = await createProbeDonation();
+
+    try {
+      const token = await login(ADMIN.email, ADMIN.password);
+      const result = await call(`/api/donations/${probe.donation.id}/follow-up`, {
+        method: "PATCH",
+        token,
+        body: {},
+      });
+
+      assert.equal(result.status, 200, JSON.stringify(result.body));
+      assert.equal(result.body.status, "followed_up");
+      assert.equal(result.body.id, probe.donation.id);
+    } finally {
+      await probe.cleanup();
+    }
+  });
+});
+
+describe("GET /api/donations/export", () => {
+  test("neutralises spreadsheet formulas in donor-supplied fields", async () => {
+    const payload = `=SUM(1+1)-${Date.now()}`;
+    const probe = await createProbeDonation({ donor_name: payload });
+
+    try {
+      const token = await login(ADMIN.email, ADMIN.password);
+      const response = await fetch(`${baseUrl}/api/donations/export`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      assert.equal(response.status, 200);
+      const csv = await response.text();
+
+      assert.ok(
+        csv.includes(`"'${payload}"`),
+        "a leading '=' must be prefixed so Excel treats it as text",
+      );
+      assert.ok(
+        !csv.includes(`"${payload}"`),
+        "the raw formula must not reach the export unescaped",
+      );
+    } finally {
+      await probe.cleanup();
+    }
+  });
+
+  test("redacts the identity of anonymous donations", async () => {
+    const marker = `anon-probe-${Date.now()}`;
+    const probe = await createProbeDonation({
+      donor_name: marker,
+      donor_email: `${marker}@riverside.example`,
+      donor_phone: "+27 00 000 0000",
+      anonymous: true,
+    });
+
+    try {
+      const token = await login(ADMIN.email, ADMIN.password);
+      const csv = await (
+        await fetch(`${baseUrl}/api/donations/export`, {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+      ).text();
+
+      assert.ok(
+        !csv.includes(marker),
+        "an anonymous donor's name and email must not be exported",
+      );
+    } finally {
+      await probe.cleanup();
+    }
+  });
+});
+
+describe("DELETE /api/campaigns/:id", () => {
+  test("returns 409 when the campaign still has donations", async () => {
+    const token = await login(ADMIN.email, ADMIN.password);
+    const result = await call(
+      "/api/campaigns/81111111-1111-4111-8111-111111111111",
+      { method: "DELETE", token },
+    );
+
+    // Regression: the FK violation surfaced as a generic 500.
+    assert.equal(result.status, 409, JSON.stringify(result.body));
+  });
+});
+
+describe("POST /api/donations", () => {
+  test("a one_off donation settles as paid and returns a receipt reference", async () => {
+    const campaign = required(
+      (
+        await supabaseAdmin
+          .from("campaigns")
+          .select("id, current_amount")
+          .eq("active", true)
+          .limit(1)
+          .single()
+      ).data,
+      "an active campaign",
+    );
+
+    const result = await call("/api/donations", {
+      method: "POST",
+      body: {
+        campaign_id: campaign.id,
+        amount: 42,
+        type: "one_off",
+        donor_name: "One off donor",
+        donor_email: "oneoff@riverside.example",
+        anonymous: false,
+        receipt_opt_in: true,
+      },
+    });
+
+    try {
+      assert.equal(result.status, 201, JSON.stringify(result.body));
+      // Contract response shape: {id, status, receipt_reference}
+      assert.equal(result.body.status, "paid");
+      assert.equal(typeof result.body.id, "string");
+      assert.match(result.body.receipt_reference, /^RCH-\d{4}-[0-9A-F]{8}$/);
+
+      const stored = required(
+        (
+          await supabaseAdmin
+            .from("donations")
+            .select("type, status, receipt_reference")
+            .eq("id", result.body.id)
+            .single()
+        ).data,
+        "the stored donation",
+      );
+
+      // Regression: every donation previously defaulted to pending_followup.
+      assert.equal(stored.type, "one_off");
+      assert.equal(stored.status, "paid");
+      assert.equal(stored.receipt_reference, result.body.receipt_reference);
+    } finally {
+      await supabaseAdmin.from("donations").delete().eq("id", result.body.id);
+      await supabaseAdmin
+        .from("campaigns")
+        .update({ current_amount: campaign.current_amount })
+        .eq("id", campaign.id);
+    }
+  });
+
+  test("a pledge_intent donation is queued as pending_followup", async () => {
+    const campaign = required(
+      (
+        await supabaseAdmin
+          .from("campaigns")
+          .select("id, current_amount")
+          .eq("active", true)
+          .limit(1)
+          .single()
+      ).data,
+      "an active campaign",
+    );
+
+    const result = await call("/api/donations", {
+      method: "POST",
+      body: {
+        campaign_id: campaign.id,
+        amount: 77,
+        type: "pledge_intent",
+        donor_name: "Pledger",
+        donor_email: "pledger@riverside.example",
+        anonymous: false,
+        receipt_opt_in: false,
+      },
+    });
+
+    try {
+      assert.equal(result.status, 201, JSON.stringify(result.body));
+      assert.equal(result.body.status, "pending_followup");
+    } finally {
+      await supabaseAdmin.from("donations").delete().eq("id", result.body.id);
+      await supabaseAdmin
+        .from("campaigns")
+        .update({ current_amount: campaign.current_amount })
+        .eq("id", campaign.id);
+    }
+  });
+
+  test("rejects the removed 'monthly' type", async () => {
+    const campaign = required(
+      (
+        await supabaseAdmin
+          .from("campaigns")
+          .select("id")
+          .eq("active", true)
+          .limit(1)
+          .single()
+      ).data,
+      "an active campaign",
+    );
+
+    const result = await call("/api/donations", {
+      method: "POST",
+      body: {
+        campaign_id: campaign.id,
+        amount: 10,
+        type: "monthly",
+        donor_name: "Old client",
+        anonymous: false,
+        receipt_opt_in: false,
+      },
+    });
+
+    assert.equal(result.status, 400, JSON.stringify(result.body));
+  });
+
+  test("returns 404 for a donation against a non-existent campaign", async () => {
+    const result = await call("/api/donations", {
+      method: "POST",
+      body: {
+        campaign_id: "00000000-0000-4000-8000-000000000000",
+        amount: 10,
+        type: "one_off",
+        donor_name: "Nowhere",
+        anonymous: false,
+        receipt_opt_in: false,
+      },
+    });
+
+    // Regression: the FK violation surfaced as a generic 500.
+    assert.equal(result.status, 404, JSON.stringify(result.body));
+  });
+});
+
+describe("campaign.current_amount integrity", () => {
+  test("deleting a donation decrements the campaign total", async () => {
+    const campaign = required(
+      (
+        await supabaseAdmin
+          .from("campaigns")
+          .select("id, current_amount")
+          .eq("active", true)
+          .limit(1)
+          .single()
+      ).data,
+      "an active campaign",
+    );
+
+    const before = campaign.current_amount;
+    const probe = await createProbeDonation({ amount: 123 });
+
+    const afterInsert = required(
+      (
+        await supabaseAdmin
+          .from("campaigns")
+          .select("current_amount")
+          .eq("id", campaign.id)
+          .single()
+      ).data,
+      "the campaign after insert",
+    );
+
+    await probe.cleanup();
+
+    const afterDelete = required(
+      (
+        await supabaseAdmin
+          .from("campaigns")
+          .select("current_amount")
+          .eq("id", campaign.id)
+          .single()
+      ).data,
+      "the campaign after delete",
+    );
+
+    assert.equal(
+      Number(afterInsert.current_amount),
+      Number(before) + 123,
+      "an insert must raise the total",
+    );
+    // Regression: the trigger was insert-only, so a delete left the total
+    // permanently inflated.
+    assert.equal(
+      Number(afterDelete.current_amount),
+      Number(before),
+      "a delete must lower the total back",
+    );
+  });
+
+  test("the live total equals the sum of the campaign's donations", async () => {
+    const { data: campaigns } = await supabaseAdmin
+      .from("campaigns")
+      .select("id, title, current_amount");
+
+    for (const campaign of campaigns ?? []) {
+      const { data: donations } = await supabaseAdmin
+        .from("donations")
+        .select("amount")
+        .eq("campaign_id", campaign.id);
+
+      const expected = (donations ?? []).reduce(
+        (total, d) => total + Number(d.amount),
+        0,
+      );
+
+      assert.equal(
+        Number(campaign.current_amount),
+        expected,
+        `${campaign.title} total must equal the sum of its donations`,
+      );
+    }
+  });
+});
+
+describe("access control: contract role matrix", () => {
+  const STAFF = { email: "staff@riverside.example", password: "Password123" };
+  const MEMBER = { email: "aisha@riverside.example", password: "Password123" };
+
+  test("donation export is admin-only; staff are refused", async () => {
+    const staffToken = await login(STAFF.email, STAFF.password);
+    const denied = await call("/api/donations/export", { token: staffToken });
+
+    // Regression: the export was reachable by staff, exposing donor contact
+    // details, while the contract grants it to admins only.
+    assert.equal(denied.status, 403, JSON.stringify(denied.body));
+
+    const adminToken = await login(ADMIN.email, ADMIN.password);
+    // The export returns text/csv, so check it without the JSON helper.
+    const allowed = await fetch(`${baseUrl}/api/donations/export`, {
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+    assert.equal(allowed.status, 200);
+    assert.match(allowed.headers.get("content-type") ?? "", /text\/csv/);
+  });
+
+  test("the removed /export.csv path is gone", async () => {
+    const token = await login(ADMIN.email, ADMIN.password);
+    const result = await call("/api/donations/export.csv", { token });
+
+    assert.equal(result.status, 404, JSON.stringify(result.body));
+  });
+
+  test("reports summary is reachable by staff, not only admins", async () => {
+    const staffToken = await login(STAFF.email, STAFF.password);
+    const staff = await call("/api/reports/summary", { token: staffToken });
+
+    // Regression: this was admin-only, locking staff out of the summary.
+    assert.equal(staff.status, 200, JSON.stringify(staff.body));
+
+    const memberToken = await login(MEMBER.email, MEMBER.password);
+    const member = await call("/api/reports/summary", { token: memberToken });
+    assert.equal(member.status, 403, JSON.stringify(member.body));
+  });
+
+  test("only an admin may delete a facility or equipment", async () => {
+    const staffToken = await login(STAFF.email, STAFF.password);
+
+    const facility = required(
+      (
+        await supabaseAdmin
+          .from("facilities")
+          .select("id")
+          .eq("active", true)
+          .limit(1)
+          .single()
+      ).data,
+      "an active facility",
+    );
+    const equipment = required(
+      (
+        await supabaseAdmin
+          .from("equipment")
+          .select("id")
+          .eq("active", true)
+          .limit(1)
+          .single()
+      ).data,
+      "active equipment",
+    );
+
+    // Regression: staff could deactivate resources, removing them from
+    // public booking. The contract makes deletion admin-only.
+    const deniedFacility = await call(`/api/facilities/${facility.id}`, {
+      method: "DELETE",
+      token: staffToken,
+    });
+    assert.equal(deniedFacility.status, 403, JSON.stringify(deniedFacility.body));
+
+    const deniedEquipment = await call(`/api/equipment/${equipment.id}`, {
+      method: "DELETE",
+      token: staffToken,
+    });
+    assert.equal(deniedEquipment.status, 403, JSON.stringify(deniedEquipment.body));
+
+    // Confirm nothing was actually deactivated by the refused calls.
+    const stillActive = required(
+      (
+        await supabaseAdmin
+          .from("facilities")
+          .select("active")
+          .eq("id", facility.id)
+          .single()
+      ).data,
+      "the facility row",
+    );
+    assert.equal(stillActive.active, true);
+  });
+
+  test("staff may create and edit programmes; only an admin may delete them", async () => {
+    const staffToken = await login(STAFF.email, STAFF.password);
+    const suffix = Date.now();
+
+    const created = await call("/api/programmes", {
+      method: "POST",
+      token: staffToken,
+      body: {
+        title: `Staff programme ${suffix}`,
+        description: "Created by staff",
+        age_range: "5-12",
+        schedule_info: "Mon 16:00",
+        active: true,
+      },
+    });
+
+    // Regression: programme creation was admin-only, but the contract
+    // grants it to staff and admins alike.
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+
+    const programmeId = created.body.programme.id;
+
+    try {
+
+      const updated = await call(`/api/programmes/${programmeId}`, {
+        method: "PATCH",
+        token: staffToken,
+        body: { title: `Staff programme ${suffix} edited` },
+      });
+      assert.equal(updated.status, 200, JSON.stringify(updated.body));
+
+      const staffDelete = await call(`/api/programmes/${programmeId}`, {
+        method: "DELETE",
+        token: staffToken,
+      });
+      assert.equal(staffDelete.status, 403, JSON.stringify(staffDelete.body));
+    } finally {
+      // Delete by id: the update above renames the programme, so matching on
+      // the original title would no longer find it.
+      await supabaseAdmin.from("programmes").delete().eq("id", programmeId);
+    }
+  });
+
+  test("only a member may create a booking", async () => {
+    const start = new Date(Date.now() + 150 * 86_400_000).toISOString();
+    const end = new Date(Date.now() + 151 * 86_400_000).toISOString();
+    const facility = required(
+      (
+        await supabaseAdmin
+          .from("facilities")
+          .select("id")
+          .eq("active", true)
+          .limit(1)
+          .single()
+      ).data,
+      "an active facility",
+    );
+
+    const body = { facility_id: facility.id, start_at: start, end_at: end };
+
+    // Regression: any authenticated user, including staff, could create a
+    // booking attributed to their own profile.
+    const staffToken = await login(STAFF.email, STAFF.password);
+    const staff = await call("/api/bookings", {
+      method: "POST",
+      token: staffToken,
+      body,
+    });
+    assert.equal(staff.status, 403, JSON.stringify(staff.body));
+
+    const memberToken = await login(MEMBER.email, MEMBER.password);
+    const member = await call("/api/bookings", {
+      method: "POST",
+      token: memberToken,
+      body,
+    });
+    assert.equal(member.status, 201, JSON.stringify(member.body));
+
+    await removeProbeBooking(member.body.booking.id);
+  });
+});

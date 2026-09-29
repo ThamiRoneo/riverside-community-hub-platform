@@ -1,4 +1,5 @@
-export type Role = "visitor" | "member" | "staff" | "admin";
+// Must stay in sync with the public.user_role enum in migration 0001.
+export type Role = "member" | "staff" | "admin";
 
 export interface User {
   id: string;
@@ -99,30 +100,47 @@ export interface ReportRecord {
   generated_at: string;
 }
 
+// GET /api/members returns raw profile rows, which use the `phone` column.
 export interface MemberRecord {
   id: string;
   full_name: string;
   phone: string | null;
   role: Role;
+  membership_tier: string | null;
   membership_expires_at: string | null;
   created_at: string;
 }
 
+// GET /api/profile/me follows the API contract, which renames `phone` to
+// `contact_phone` and adds the computed `expiring_soon` flag.
 export interface MemberProfileRecord {
   id: string;
   full_name: string;
-  phone: string | null;
+  contact_phone: string | null;
   role: Role;
+  membership_tier: string;
   membership_expires_at: string | null;
+  joined_at: string;
   created_at: string;
+  expiring_soon: boolean;
 }
+
+// Donation types and statuses follow the API contract and must match the
+// public.donation_type / donation_status enums (migration 0005).
+export type DonationType = "one_off" | "pledge_intent";
+export type DonationStatus =
+  | "paid"
+  | "pending_followup"
+  | "followed_up"
+  | "cancelled";
 
 export interface DonationRecord {
   id: string;
   campaign_id: string;
   amount: number;
-  type: "one_off" | "monthly";
-  status: "pending_followup" | "followed_up";
+  type: DonationType;
+  status: DonationStatus;
+  receipt_reference: string | null;
   donor_name: string | null;
   donor_email: string | null;
   anonymous: boolean;

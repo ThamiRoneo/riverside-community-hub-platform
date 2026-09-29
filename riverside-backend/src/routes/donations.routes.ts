@@ -1,14 +1,28 @@
+import crypto from "node:crypto";
 import { Router } from "express";
 import { supabaseAdmin } from "../config/supabase";
+import { isForeignKeyViolation, sendRowError } from "../lib/http";
 import { attachUserIfPresent, requireAuth } from "../middleware/auth";
 import { requireRole } from "../middleware/roles";
 import { DonationCreateSchema } from "../validation/schemas";
 
 const router = Router();
 
+/**
+ * Neutralises spreadsheet formula injection. Donor-supplied fields reach the
+ * CSV and are opened in Excel by staff, so a leading = + - @ or a control
+ * character would otherwise be evaluated as a formula.
+ */
 function csvCell(value: unknown) {
   const text = value == null ? "" : String(value);
-  return `"${text.replace(/"/g, '""')}"`;
+  const safe = /^[=+\-@\t\r]/.test(text) ? `'${text}` : text;
+  return `"${safe.replace(/"/g, '""')}"`;
+}
+
+/** An anonymous donation must not expose the donor's identity in an export. */
+function redactAnonymous(donation: Record<string, unknown>) {
+  if (!donation.anonymous) return donation;
+  return { ...donation, donor_name: null, donor_email: null, donor_phone: null };
 }
 
 router.get(
@@ -29,10 +43,13 @@ router.get(
   },
 );
 
+// GET /api/donations/export
+// Contract restricts the full donor export to admins. Staff keep the
+// filtered JSON list but not the identifying CSV.
 router.get(
-  "/export.csv",
+  "/export",
   requireAuth,
-  requireRole("staff", "admin"),
+  requireRole("admin"),
   async (_req, res) => {
     const { data, error } = await supabaseAdmin
       .from("donations")
@@ -58,11 +75,12 @@ router.get(
       "staff_note",
       "created_at",
     ];
-    const rows = (data ?? []).map((donation) =>
-      columns
-        .map((column) => csvCell(donation[column as keyof typeof donation]))
-        .join(","),
-    );
+    const rows = (data ?? []).map((donation) => {
+      const safe = redactAnonymous(donation as Record<string, unknown>);
+      return columns
+        .map((column) => csvCell(safe[column as keyof typeof donation]))
+        .join(",");
+    });
 
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     res.setHeader("Content-Disposition", "attachment; filename=donations.csv");
@@ -70,50 +88,96 @@ router.get(
   },
 );
 
+/**
+ * Reference returned to a donor in the POST response. Minted once on insert
+ * so it is stable and unique.
+ */
+function mintReceiptReference(): string {
+  const year = new Date().getUTCFullYear();
+  return `RCH-${year}-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
+}
+
+// POST /api/donations
+// Contract: one_off settles immediately as "paid"; a pledge_intent is a promise
+// to give and lands in the staff follow-up queue as "pending_followup".
 router.post("/", attachUserIfPresent, async (req, res) => {
   const result = DonationCreateSchema.safeParse(req.body);
   if (!result.success)
     return res.status(400).json({ error: "Invalid payload" });
 
+  const { type } = result.data;
+  const status = type === "pledge_intent" ? "pending_followup" : "paid";
+
   const { data, error } = await supabaseAdmin
     .from("donations")
     .insert({
       ...result.data,
+      status,
+      receipt_reference: mintReceiptReference(),
       donor_id: req.user?.id ?? null,
     })
-    .select(
-      "id, campaign_id, amount, type, anonymous, receipt_opt_in, created_at",
-    )
+    .select("id, status, receipt_reference")
     .single();
 
+  // A campaign that does not exist is a client error, not a server fault.
+  if (isForeignKeyViolation(error))
+    return res
+      .status(404)
+      .json({ error: "Campaign not found for this donation" });
   if (error)
     return res.status(500).json({ error: "Unable to create donation" });
-  return res.status(201).json({ message: "Donation created", donation: data });
+
+  return res.status(201).json(data);
 });
 
+// PATCH /api/donations/:id/follow-up
+// Contract: staff_note is optional, the transition is only valid from
+// pending_followup, and anything else is a 409.
 router.patch(
   "/:id/follow-up",
   requireAuth,
   requireRole("staff", "admin"),
   async (req, res) => {
-    const { staff_note } = req.body as { staff_note: string };
-    if (!staff_note)
-      return res
-        .status(400)
-        .json({ error: "staff_note is required for follow-up" });
+    const { staff_note } = req.body as { staff_note?: string };
+
+    const { data: donation, error: lookupError } = await supabaseAdmin
+      .from("donations")
+      .select("id, status")
+      .eq("id", req.params.id)
+      .single();
+
+    if (lookupError || !donation)
+      return sendRowError(
+        res,
+        lookupError,
+        "Donation not found",
+        "Unable to load donation",
+      );
+
+    if (donation.status !== "pending_followup")
+      return res.status(409).json({
+        error: `A ${donation.status} donation cannot be followed up`,
+      });
+
     const { data, error } = await supabaseAdmin
       .from("donations")
-      .update({ status: "followed_up", staff_note })
+      .update({
+        status: "followed_up",
+        ...(staff_note ? { staff_note } : {}),
+      })
       .eq("id", req.params.id)
-      .select("id, status, staff_note")
+      .select("id, status")
       .single();
 
     if (error || !data)
-      return res.status(404).json({ error: "Donation not found" });
-    return res.status(200).json({
-      message: "Donation follow-up completed",
-      donation: data,
-    });
+      return sendRowError(
+        res,
+        error,
+        "Donation not found",
+        "Unable to complete follow-up",
+      );
+
+    return res.status(200).json({ id: data.id, status: data.status });
   },
 );
 

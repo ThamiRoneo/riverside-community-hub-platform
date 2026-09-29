@@ -5,7 +5,10 @@ import { requireRole } from "../middleware/roles";
 
 const router = Router();
 
-router.get("/", requireAuth, requireRole("admin"), async (_req, res) => {
+// GET /api/reports/summary
+// Contract grants this to staff and admins alike; it was previously
+// admin-only, which locked staff out of the dashboard summary.
+router.get("/summary", requireAuth, requireRole("staff", "admin"), async (_req, res) => {
   const monthStart = new Date();
   monthStart.setUTCDate(1);
   monthStart.setUTCHours(0, 0, 0, 0);

@@ -2,6 +2,7 @@ import { Router } from "express";
 import { supabaseAdmin, supabasePublic } from "../config/supabase";
 import { requireAuth } from "../middleware/auth";
 import { requireRole } from "../middleware/roles";
+import { issueReauthToken, REAUTH_TTL_MS } from "../middleware/reauth";
 import {
   SignupSchema,
   LoginSchema,
@@ -31,6 +32,26 @@ router.post("/signup", async (req, res) => {
   if (error) return res.status(400).json({ error: error.message });
   if (!data.user) return res.status(500).json({ error: "Signup failed" });
 
+  // The on_auth_user_created trigger already inserts a profile row, so this
+  // upsert updates that row rather than colliding with its primary key.
+  const expiration = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+  const { error: profileError } = await supabaseAdmin.from("profiles").upsert(
+    {
+      id: data.user.id,
+      full_name,
+      membership_expires_at: expiration,
+      role: "member",
+      phone: null,
+      membership_tier: "free",
+    },
+    { onConflict: "id" },
+  );
+
+  if (profileError) {
+    return res.status(500).json({ error: "Failed to create profile" });
+  }
+
+
   return res.status(201).json({
     message: data.session
       ? "User signed up successfully"
@@ -39,6 +60,7 @@ router.post("/signup", async (req, res) => {
     user: { id: data.user.id, email: data.user.email, role: "member" },
   });
 });
+
 
 // POST /login - authenticate user
 router.post("/login", async (req, res) => {
@@ -58,7 +80,7 @@ router.post("/login", async (req, res) => {
 
   const { data: profile, error: profileError } = await supabaseAdmin
     .from("profiles")
-    .select("role, full_name, membership_expires_at, created_at")
+    .select("role, full_name, membership_tier, phone, membership_expires_at, created_at")
     .eq("id", data.user.id)
     .single();
 
@@ -73,45 +95,44 @@ router.post("/login", async (req, res) => {
       email: data.user.email,
       role: profile.role,
       full_name: profile.full_name,
+      membership_tier: profile.membership_tier || "free",
+      joined_at: profile.created_at || data.user.created_at,
       membership_expires_at: profile.membership_expires_at,
       created_at: profile.created_at,
     },
   });
 });
 
-// POST /reauthenticate - re-authenticate (required for sensitive operations)
-router.post("/reauthenticate", requireAuth, (req, res) => {
+// POST /api/reauthenticate - verify the caller's password and issue a
+// short-lived step-up token for sensitive operations.
+router.post("/reauthenticate", requireAuth, async (req, res) => {
   const result = ReauthenticateSchema.safeParse(req.body);
   if (!result.success) {
     return res.status(400).json({ error: "Invalid payload" });
   }
+
   const { email, password } = result.data;
-  console.log(`Re-authenticate request: ${email}`);
-  res.status(200).json({
+
+  // Only the signed-in account may be re-authenticated, so a valid password
+  // for some *other* account cannot be used to unlock this session.
+  if (email !== req.user!.email) {
+    return res.status(401).json({ error: "Invalid credentials" });
+  }
+
+  const { data, error } = await supabasePublic.auth.signInWithPassword({
+    email,
+    password,
+  });
+
+  if (error || !data.user || data.user.id !== req.user!.id) {
+    return res.status(401).json({ error: "Invalid credentials" });
+  }
+
+  return res.status(200).json({
     message: "Re-authentication successful",
-    user: req.user,
+    reauth_token: issueReauthToken(req.user!.id),
+    expires_in: Math.floor(REAUTH_TTL_MS / 1000),
   });
 });
-
-// PATCH /members/:id/role - change member role (requires admin + re-auth)
-router.patch(
-  "/members/:id/role",
-  requireAuth,
-  requireRole("admin"),
-  (req, res) => {
-    if (!req.user) {
-      return res.status(401).json({ error: "Not authenticated" });
-    }
-    const { id, role } = req.params as { id: string; role: string };
-    if (req.user.role !== "admin") {
-      return res.status(403).json({ error: "Insufficient role" });
-    }
-    console.log(`Role change request for member ${id}: to ${role}`);
-    res.status(200).json({
-      message: `Role updated for member ${id} to ${role}`,
-      memberId: id,
-    });
-  },
-);
 
 export default router;

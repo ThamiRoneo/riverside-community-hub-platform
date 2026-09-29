@@ -13,6 +13,7 @@ import programmesRoutes from "./routes/programmes.routes";
 import reportsRoutes from "./routes/reports.routes";
 import adminRoutes from "./routes/admin.routes";
 import notificationsRoutes from "./routes/notifications.routes";
+import profileRoutes from "./routes/profile.routes";
 
 const app = express();
 
@@ -24,6 +25,7 @@ app.use(morgan("dev"));
 app.get("/health", (_req, res) => res.json({ status: "ok" }));
 
 app.use("/api/auth", authRoutes);
+app.use("/api/profile", profileRoutes);
 app.use("/api/members", membersRoutes);
 app.use("/api/bookings", bookingsRoutes);
 app.use("/api/donations", donationsRoutes);

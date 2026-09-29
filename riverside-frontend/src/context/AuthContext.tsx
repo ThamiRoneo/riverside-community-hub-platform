@@ -7,7 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import type { Role, User } from "../types";
+import type { Role, User, MemberProfileRecord } from "../types";
 import { apiGet, apiPost } from "../lib/api";
 import { supabase } from "../lib/supabase";
 
@@ -88,6 +88,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.removeItem(STORAGE_KEY);
   }, [user]);
 
+  const fetchProfile = useCallback(async () => {
+     if (!user) return;
+     try {
+       const profileData = await apiGet<{
+         profile: MemberProfileRecord;
+         membership_status: string;
+       }>("/members/me");
+       // Update the user's fullName from the profile
+       setUser(prev => {
+         if (!prev) return prev;
+         return {
+           ...prev,
+           fullName: profileData.profile.full_name,
+           // We could also update membershipTier if we want to display it
+         };
+       });
+     } catch (err) {
+       // console.error("Failed to fetch profile", err);
+     }
+   }, [user]);
+ 
+   useEffect(() => {
+     if (user) {
+       fetchProfile();
+     }
+   }, [user, fetchProfile]);
+  
   const login = useCallback(async (email: string, password: string) => {
     const response = await apiPost<AuthResponse>("/auth/login", {
       email,

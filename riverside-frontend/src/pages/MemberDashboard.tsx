@@ -37,10 +37,7 @@ export default function MemberDashboard() {
       loadBookings(),
       apiGet<{ facilities: FacilityRecord[] }>("/facilities"),
       apiGet<{ equipment: EquipmentRecord[] }>("/equipment"),
-      apiGet<{
-        profile: MemberProfileRecord;
-        membership_status: string;
-      }>("/members/me"),
+      apiGet<MemberProfileRecord>("/profile/me"),
       apiGet<{ notifications: NotificationRecord[] }>("/notifications"),
     ])
       .then(
@@ -53,10 +50,12 @@ export default function MemberDashboard() {
         ]) => {
           setFacilities(facilityResponse.facilities);
           setEquipment(equipmentResponse.equipment);
-          setProfile(profileResponse.profile);
-          setMembershipStatus(profileResponse.membership_status);
-          setProfileName(profileResponse.profile.full_name);
-          setProfilePhone(profileResponse.profile.phone ?? "");
+          setProfile(profileResponse);
+          setMembershipStatus(
+            profileResponse.expiring_soon ? "expiring_soon" : "active",
+          );
+          setProfileName(profileResponse.full_name);
+          setProfilePhone(profileResponse.contact_phone ?? "");
           setNotifications(notificationResponse.notifications);
           setStatus("ready");
         },
@@ -101,11 +100,12 @@ export default function MemberDashboard() {
   async function saveProfile(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     try {
-      const response = await apiPatch<{ profile: MemberProfileRecord }>(
-        "/members/me",
-        { full_name: profileName, phone: profilePhone || undefined },
+      const response = await apiPatch<MemberProfileRecord>(
+        "/profile/me",
+        { full_name: profileName, contact_phone: profilePhone || null },
       );
-      setProfile(response.profile);
+      setProfile(response);
+      setProfilePhone(response.contact_phone ?? "");
       setMessage("Profile updated successfully.");
     } catch (error) {
       setMessage(

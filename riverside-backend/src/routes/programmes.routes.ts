@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { supabaseAdmin } from "../config/supabase";
+import { sendRowError } from "../lib/http";
 import { requireAuth } from "../middleware/auth";
 import { requireRole } from "../middleware/roles";
 import {
@@ -23,38 +24,55 @@ router.get("/", async (_req, res) => {
   return res.status(200).json({ programmes: data ?? [] });
 });
 
-router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
-  const result = ProgrammeCreateSchema.safeParse(req.body);
-  if (!result.success)
-    return res.status(400).json({ error: "Invalid payload" });
-  const { data, error } = await supabaseAdmin
-    .from("programmes")
-    .insert(result.data)
-    .select()
-    .single();
-  if (error)
-    return res.status(500).json({ error: "Unable to create programme" });
-  return res
-    .status(201)
-    .json({ message: "Programme created", programme: data });
-});
+// Contract: programmes are written by staff and admins alike. Only the
+// delete is admin-only.
+router.post(
+  "/",
+  requireAuth,
+  requireRole("staff", "admin"),
+  async (req, res) => {
+    const result = ProgrammeCreateSchema.safeParse(req.body);
+    if (!result.success)
+      return res.status(400).json({ error: "Invalid payload" });
+    const { data, error } = await supabaseAdmin
+      .from("programmes")
+      .insert(result.data)
+      .select()
+      .single();
+    if (error)
+      return res.status(500).json({ error: "Unable to create programme" });
+    return res
+      .status(201)
+      .json({ message: "Programme created", programme: data });
+  },
+);
 
-router.patch("/:id", requireAuth, requireRole("admin"), async (req, res) => {
-  const result = ProgrammeUpdateSchema.safeParse(req.body);
-  if (!result.success)
-    return res.status(400).json({ error: "Invalid payload" });
-  const { data, error } = await supabaseAdmin
-    .from("programmes")
-    .update(result.data)
-    .eq("id", req.params.id)
-    .select()
-    .single();
-  if (error || !data)
-    return res.status(404).json({ error: "Programme not found" });
-  return res
-    .status(200)
-    .json({ message: "Programme updated", programme: data });
-});
+router.patch(
+  "/:id",
+  requireAuth,
+  requireRole("staff", "admin"),
+  async (req, res) => {
+    const result = ProgrammeUpdateSchema.safeParse(req.body);
+    if (!result.success)
+      return res.status(400).json({ error: "Invalid payload" });
+    const { data, error } = await supabaseAdmin
+      .from("programmes")
+      .update(result.data)
+      .eq("id", req.params.id)
+      .select()
+      .single();
+    if (error || !data)
+      return sendRowError(
+        res,
+        error,
+        "Programme not found",
+        "Unable to update programme",
+      );
+    return res
+      .status(200)
+      .json({ message: "Programme updated", programme: data });
+  },
+);
 
 router.delete("/:id", requireAuth, requireRole("admin"), async (req, res) => {
   const { error } = await supabaseAdmin

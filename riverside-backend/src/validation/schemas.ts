@@ -22,13 +22,22 @@ export const MemberCreateSchema = z.object({
   full_name: z.string().min(2),
 });
 
+// Must stay in sync with the public.user_role enum in migration 0001.
 export const MemberUpdateSchema = z.object({
-  role: z.enum(["visitor", "member", "staff", "admin"]),
+  role: z.enum(["member", "staff", "admin"]),
 });
 
+// Wire format uses `contact_phone` per the API contract; the profiles table
+// column is `phone`. The mapping belongs in the route, not the schema.
 export const MemberProfileUpdateSchema = z.object({
   full_name: z.string().min(2).optional(),
-  phone: z.string().max(30).optional(),
+  contact_phone: z.string().max(30).nullable().optional(),
+});
+
+// POST /api/profile/complete: identity is required, phone is not.
+export const ProfileCompleteSchema = z.object({
+  full_name: z.string().min(2),
+  contact_phone: z.string().max(30).nullable().optional(),
 });
 
 export const BookingCreateSchema = z
@@ -51,16 +60,19 @@ export const BookingRejectSchema = z.object({
   staff_note: z.string().min(1),
 });
 
+// Donation types and statuses are defined by the API contract and must match
+// the public.donation_type / donation_status enums (migration 0005).
+export const DonationTypeSchema = z.enum(["one_off", "pledge_intent"]);
+
 export const DonationCreateSchema = z.object({
-  campaign_id: z.string(),
+  campaign_id: z.string().uuid(),
   amount: z.number().positive(),
   donor_name: z.string().optional(),
-  donor_email: z.string().optional(),
+  donor_email: z.string().email().optional(),
   donor_phone: z.string().optional(),
-  type: z.enum(["one_off", "monthly"]).default("one_off"),
+  type: DonationTypeSchema.default("one_off"),
   anonymous: z.boolean().default(false),
   receipt_opt_in: z.boolean().default(false),
-  staff_note: z.string().optional(),
 });
 
 export const FacilityCreateSchema = z.object({

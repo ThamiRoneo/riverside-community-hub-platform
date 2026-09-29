@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { supabaseAdmin } from "../config/supabase";
+import { sendRowError } from "../lib/http";
 import { requireAuth } from "../middleware/auth";
 import { requireRole } from "../middleware/roles";
 import {
@@ -57,17 +58,24 @@ router.patch(
       .select()
       .single();
     if (error || !data)
-      return res.status(404).json({ error: "Facility not found" });
+      return sendRowError(
+        res,
+        error,
+        "Facility not found",
+        "Unable to update facility",
+      );
     return res
       .status(200)
       .json({ message: "Facility updated", facility: data });
   },
 );
 
+// Contract: DELETE /api/resources/:id is admin only. Staff may create and
+// edit resources, but deactivating one removes it from public booking.
 router.delete(
   "/:id",
   requireAuth,
-  requireRole("staff", "admin"),
+  requireRole("admin"),
   async (req, res) => {
     const { error } = await supabaseAdmin
       .from("facilities")
