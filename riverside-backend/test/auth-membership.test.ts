@@ -604,3 +604,225 @@ describe("DELETE /api/campaigns/:id", () => {
     assert.equal(result.status, 409, JSON.stringify(result.body));
   });
 });
+
+describe("POST /api/donations", () => {
+  test("a one_off donation settles as paid and returns a receipt reference", async () => {
+    const campaign = required(
+      (
+        await supabaseAdmin
+          .from("campaigns")
+          .select("id, current_amount")
+          .eq("active", true)
+          .limit(1)
+          .single()
+      ).data,
+      "an active campaign",
+    );
+
+    const result = await call("/api/donations", {
+      method: "POST",
+      body: {
+        campaign_id: campaign.id,
+        amount: 42,
+        type: "one_off",
+        donor_name: "One off donor",
+        donor_email: "oneoff@riverside.example",
+        anonymous: false,
+        receipt_opt_in: true,
+      },
+    });
+
+    try {
+      assert.equal(result.status, 201, JSON.stringify(result.body));
+      // Contract response shape: {id, status, receipt_reference}
+      assert.equal(result.body.status, "paid");
+      assert.equal(typeof result.body.id, "string");
+      assert.match(result.body.receipt_reference, /^RCH-\d{4}-[0-9A-F]{8}$/);
+
+      const stored = required(
+        (
+          await supabaseAdmin
+            .from("donations")
+            .select("type, status, receipt_reference")
+            .eq("id", result.body.id)
+            .single()
+        ).data,
+        "the stored donation",
+      );
+
+      // Regression: every donation previously defaulted to pending_followup.
+      assert.equal(stored.type, "one_off");
+      assert.equal(stored.status, "paid");
+      assert.equal(stored.receipt_reference, result.body.receipt_reference);
+    } finally {
+      await supabaseAdmin.from("donations").delete().eq("id", result.body.id);
+      await supabaseAdmin
+        .from("campaigns")
+        .update({ current_amount: campaign.current_amount })
+        .eq("id", campaign.id);
+    }
+  });
+
+  test("a pledge_intent donation is queued as pending_followup", async () => {
+    const campaign = required(
+      (
+        await supabaseAdmin
+          .from("campaigns")
+          .select("id, current_amount")
+          .eq("active", true)
+          .limit(1)
+          .single()
+      ).data,
+      "an active campaign",
+    );
+
+    const result = await call("/api/donations", {
+      method: "POST",
+      body: {
+        campaign_id: campaign.id,
+        amount: 77,
+        type: "pledge_intent",
+        donor_name: "Pledger",
+        donor_email: "pledger@riverside.example",
+        anonymous: false,
+        receipt_opt_in: false,
+      },
+    });
+
+    try {
+      assert.equal(result.status, 201, JSON.stringify(result.body));
+      assert.equal(result.body.status, "pending_followup");
+    } finally {
+      await supabaseAdmin.from("donations").delete().eq("id", result.body.id);
+      await supabaseAdmin
+        .from("campaigns")
+        .update({ current_amount: campaign.current_amount })
+        .eq("id", campaign.id);
+    }
+  });
+
+  test("rejects the removed 'monthly' type", async () => {
+    const campaign = required(
+      (
+        await supabaseAdmin
+          .from("campaigns")
+          .select("id")
+          .eq("active", true)
+          .limit(1)
+          .single()
+      ).data,
+      "an active campaign",
+    );
+
+    const result = await call("/api/donations", {
+      method: "POST",
+      body: {
+        campaign_id: campaign.id,
+        amount: 10,
+        type: "monthly",
+        donor_name: "Old client",
+        anonymous: false,
+        receipt_opt_in: false,
+      },
+    });
+
+    assert.equal(result.status, 400, JSON.stringify(result.body));
+  });
+
+  test("returns 404 for a donation against a non-existent campaign", async () => {
+    const result = await call("/api/donations", {
+      method: "POST",
+      body: {
+        campaign_id: "00000000-0000-4000-8000-000000000000",
+        amount: 10,
+        type: "one_off",
+        donor_name: "Nowhere",
+        anonymous: false,
+        receipt_opt_in: false,
+      },
+    });
+
+    // Regression: the FK violation surfaced as a generic 500.
+    assert.equal(result.status, 404, JSON.stringify(result.body));
+  });
+});
+
+describe("campaign.current_amount integrity", () => {
+  test("deleting a donation decrements the campaign total", async () => {
+    const campaign = required(
+      (
+        await supabaseAdmin
+          .from("campaigns")
+          .select("id, current_amount")
+          .eq("active", true)
+          .limit(1)
+          .single()
+      ).data,
+      "an active campaign",
+    );
+
+    const before = campaign.current_amount;
+    const probe = await createProbeDonation({ amount: 123 });
+
+    const afterInsert = required(
+      (
+        await supabaseAdmin
+          .from("campaigns")
+          .select("current_amount")
+          .eq("id", campaign.id)
+          .single()
+      ).data,
+      "the campaign after insert",
+    );
+
+    await probe.cleanup();
+
+    const afterDelete = required(
+      (
+        await supabaseAdmin
+          .from("campaigns")
+          .select("current_amount")
+          .eq("id", campaign.id)
+          .single()
+      ).data,
+      "the campaign after delete",
+    );
+
+    assert.equal(
+      Number(afterInsert.current_amount),
+      Number(before) + 123,
+      "an insert must raise the total",
+    );
+    // Regression: the trigger was insert-only, so a delete left the total
+    // permanently inflated.
+    assert.equal(
+      Number(afterDelete.current_amount),
+      Number(before),
+      "a delete must lower the total back",
+    );
+  });
+
+  test("the live total equals the sum of the campaign's donations", async () => {
+    const { data: campaigns } = await supabaseAdmin
+      .from("campaigns")
+      .select("id, title, current_amount");
+
+    for (const campaign of campaigns ?? []) {
+      const { data: donations } = await supabaseAdmin
+        .from("donations")
+        .select("amount")
+        .eq("campaign_id", campaign.id);
+
+      const expected = (donations ?? []).reduce(
+        (total, d) => total + Number(d.amount),
+        0,
+      );
+
+      assert.equal(
+        Number(campaign.current_amount),
+        expected,
+        `${campaign.title} total must equal the sum of its donations`,
+      );
+    }
+  });
+});
