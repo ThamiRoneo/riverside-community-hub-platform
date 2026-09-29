@@ -1,11 +1,18 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { apiDownload, apiGet, apiPatch, apiPost } from "../lib/api";
+import {
+  apiDownload,
+  apiGet,
+  apiPatch,
+  apiPost,
+  reauthenticate,
+} from "../lib/api";
 import type {
   CampaignRecord,
   DonationRecord,
   MemberRecord,
   ProgrammeRecord,
   ReportRecord,
+  Role,
 } from "../types";
 
 export default function AdminDashboard() {
@@ -19,6 +26,12 @@ export default function AdminDashboard() {
   const [newMemberName, setNewMemberName] = useState("");
   const [newMemberEmail, setNewMemberEmail] = useState("");
   const [newMemberPassword, setNewMemberPassword] = useState("");
+  const [pendingRoleChange, setPendingRoleChange] = useState<{
+    memberId: string;
+    role: Role;
+  } | null>(null);
+  const [reauthPassword, setReauthPassword] = useState("");
+  const [roleChangeBusy, setRoleChangeBusy] = useState(false);
   const [status, setStatus] = useState<"loading" | "ready" | "error">(
     "loading",
   );
@@ -95,22 +108,77 @@ export default function AdminDashboard() {
     }
   }
 
-  async function updateMemberRole(id: string, role: MemberRecord["role"]) {
+  async function updateMemberRole(id: string, role: Role) {
+    const token = await reauthenticate(reauthPassword);
+    await apiPatch(`/members/${id}/role`, { role }, { "X-Reauth-Token": token });
+    setMembers((current) =>
+      current.map((member) => (member.id === id ? { ...member, role } : member)),
+    );
+    setPendingRoleChange(null);
+    setReauthPassword("");
+    setActionMessage("Member role updated.");
+  }
+
+  // Role changes are gated behind re-authentication, so a selection only
+  // stages the change until the admin confirms with their password.
+  function stageRoleChange(id: string, role: Role) {
+    setActionMessage("");
+    setPendingRoleChange({ memberId: id, role });
+    setReauthPassword("");
+  }
+
+  function cancelRoleChange() {
+    setPendingRoleChange(null);
+    setReauthPassword("");
+  }
+
+  async function confirmRoleChange(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!pendingRoleChange) return;
+
+    if (!reauthPassword) {
+      setActionMessage("Enter your password to confirm the role change.");
+      return;
+    }
+
+    setRoleChangeBusy(true);
+    setActionMessage("");
     try {
-      await apiPatch(`/members/${id}/role`, { role });
-      setMembers((current) =>
-        current.map((member) =>
-          member.id === id ? { ...member, role } : member,
-        ),
-      );
-      setActionMessage("Member role updated.");
+      await updateMemberRole(pendingRoleChange.memberId, pendingRoleChange.role);
     } catch (error) {
       setActionMessage(
         error instanceof Error ? error.message : "Unable to update member role",
       );
+    } finally {
+      setRoleChangeBusy(false);
     }
   }
 
+  async function renewMembership(id: string) {
+    try {
+      await apiPatch(`/members/${id}/renewal`, {});
+      // Update the member's expiration date in the UI (assuming 30-day renewal)
+      setMembers((current) =>
+        current.map((member) =>
+          member.id === id
+            ? {
+                ...member,
+                membership_expires_at: new Date(
+                  Date.now() + 30 * 24 * 60 * 60 * 1000,
+                ).toISOString(),
+              }
+            : member
+        )
+      );
+      setActionMessage("Membership renewed successfully.");
+    } catch (error) {
+      setActionMessage(
+        error instanceof Error ? error.message : "Unable to renew membership",
+      );
+    }
+  }
+
+  
   async function exportDonations() {
     try {
       const blob = await apiDownload("/donations/export.csv");
@@ -235,25 +303,75 @@ export default function AdminDashboard() {
         </form>
         {members.length === 0 ? <p>No members found.</p> : null}
         <ul>
-          {members.slice(0, 10).map((member) => (
-            <li key={member.id}>
-              {member.full_name} ({member.role}){" "}
-              <select
-                value={member.role}
-                onChange={(event) =>
-                  updateMemberRole(
-                    member.id,
-                    event.target.value as MemberRecord["role"],
-                  )
-                }
-              >
-                <option value="member">Member</option>
-                <option value="staff">Staff</option>
-                <option value="admin">Admin</option>
-              </select>
+          {members.map((member) => (
+            <li key={member.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "0.5rem 0", borderBottom: "1px solid #eee" }}>
+              <div>
+                {member.full_name} ({member.role})
+                {member.membership_expires_at ? (
+                  <><br /><small>
+                    Expires: {new Date(member.membership_expires_at).toLocaleDateString()}
+                  </small></>
+                ) : null}
+              </div>
+              <div style={{ display: "flex", gap: "0.5rem" }}>
+                <select
+                  value={
+                    pendingRoleChange?.memberId === member.id
+                      ? pendingRoleChange.role
+                      : member.role
+                  }
+                  onChange={(event) =>
+                    stageRoleChange(
+                      member.id,
+                      event.target.value as MemberRecord["role"],
+                    )
+                  }
+                >
+                  <option value="member">Member</option>
+                  <option value="staff">Staff</option>
+                  <option value="admin">Admin</option>
+                </select>
+                <button
+                  type="button"
+                  onClick={() => renewMembership(member.id)}
+                  style={{
+                    background: "#22c55e",
+                    color: "white",
+                    border: "none",
+                    borderRadius: 4,
+                    padding: "0.25rem 0.5rem",
+                    fontSize: "0.875rem",
+                    cursor: "pointer",
+                  }}
+                >
+                  Renew 30 days
+                </button>
+              </div>
+              {pendingRoleChange?.memberId === member.id ? (
+                <form
+                  onSubmit={confirmRoleChange}
+                  style={{ display: "flex", gap: "0.5rem", marginTop: "0.5rem" }}
+                >
+                  <input
+                    type="password"
+                    autoComplete="current-password"
+                    placeholder="Confirm with your password"
+                    aria-label={`Confirm role change for ${member.full_name}`}
+                    value={reauthPassword}
+                    onChange={(event) => setReauthPassword(event.target.value)}
+                  />
+                  <button type="submit" disabled={roleChangeBusy}>
+                    {roleChangeBusy ? "Confirming..." : "Confirm"}
+                  </button>
+                  <button type="button" onClick={cancelRoleChange}>
+                    Cancel
+                  </button>
+                </form>
+              ) : null}
             </li>
           ))}
         </ul>
+
         <h3>Donation follow-up</h3>
         <button type="button" onClick={exportDonations}>
           Export donations CSV
