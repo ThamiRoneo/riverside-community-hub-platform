@@ -24,6 +24,63 @@ let testUserId: string | null = null;
 
 const uniqueEmail = () => `authtest${Date.now()}${Math.floor(Math.random() * 1e6)}@riverside.com`;
 
+/** Narrows a seed-dependent lookup so a missing row fails loudly. */
+function required<T>(value: T | null | undefined, label: string): T {
+  if (value === null || value === undefined) {
+    throw new Error(`expected ${label} in the seeded database`);
+  }
+  return value;
+}
+
+/**
+ * Creates a donation and returns a cleanup that removes it.
+ *
+ * campaign.current_amount is maintained by an insert-only trigger, so the
+ * total has to be restored explicitly when a probe donation is removed.
+ */
+async function createProbeDonation(overrides: Record<string, unknown> = {}) {
+  const campaign = required(
+    (
+      await supabaseAdmin
+        .from("campaigns")
+        .select("id, current_amount")
+        .eq("active", true)
+        .limit(1)
+        .single()
+    ).data,
+    "an active campaign",
+  );
+
+  const { data, error } = await supabaseAdmin
+    .from("donations")
+    .insert({
+      campaign_id: campaign.id,
+      amount: 1,
+      type: "one_off",
+      status: "pending_followup",
+      donor_name: "Probe donor",
+      donor_email: "probe@riverside.example",
+      anonymous: false,
+      receipt_opt_in: false,
+      ...overrides,
+    })
+    .select()
+    .single();
+
+  if (error || !data) throw new Error(`probe donation failed: ${error?.message}`);
+
+  return {
+    donation: data,
+    async cleanup() {
+      await supabaseAdmin.from("donations").delete().eq("id", data.id);
+      await supabaseAdmin
+        .from("campaigns")
+        .update({ current_amount: campaign.current_amount })
+        .eq("id", campaign.id);
+    },
+  };
+}
+
 async function login(email: string, password: string) {
   const response = await fetch(`${baseUrl}/api/auth/login`, {
     method: "POST",
@@ -341,5 +398,209 @@ describe("GET /api/notifications", () => {
     const result = await call("/api/notifications?unread_only=maybe", { token });
 
     assert.equal(result.status, 400, JSON.stringify(result.body));
+  });
+});
+
+describe("PATCH /api/bookings/:id/cancel", () => {
+  const MISSING = "00000000-0000-4000-8000-000000000000";
+
+  test("returns 404 for a booking that does not exist", async () => {
+    const token = await login(ADMIN.email, ADMIN.password);
+    const result = await call(`/api/bookings/${MISSING}/cancel`, {
+      method: "PATCH",
+      token,
+    });
+
+    // Regression: the update matched zero rows but the route reported success.
+    assert.equal(result.status, 404, JSON.stringify(result.body));
+  });
+
+  test("returns 403 when the booking belongs to someone else", async () => {
+    const booking = required(
+      (
+        await supabaseAdmin
+          .from("bookings")
+          .select("id")
+          .not("member_id", "is", null)
+          .limit(1)
+          .single()
+      ).data,
+      "at least one seeded booking",
+    );
+
+
+    const staffToken = await login("staff@riverside.example", "Password123");
+    const result = await call(`/api/bookings/${booking.id}/cancel`, {
+      method: "PATCH",
+      token: staffToken,
+    });
+
+    assert.equal(result.status, 403, JSON.stringify(result.body));
+  });
+
+  test("returns the contract shape on success", async () => {
+    const member = { email: "aisha@riverside.example", password: "Password123" };
+    const token = await login(member.email, member.password);
+
+    const facility = required(
+      (
+        await supabaseAdmin
+          .from("facilities")
+          .select("id")
+          .eq("active", true)
+          .limit(1)
+          .single()
+      ).data,
+      "an active facility",
+    );
+
+    const start = new Date(Date.now() + 90 * 86_400_000).toISOString();
+    const end = new Date(Date.now() + 91 * 86_400_000).toISOString();
+
+    const created = await call("/api/bookings", {
+      method: "POST",
+      token,
+      body: { facility_id: facility.id, start_at: start, end_at: end },
+    });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+
+    const bookingId = created.body.booking.id;
+    const cancelled = await call(`/api/bookings/${bookingId}/cancel`, {
+      method: "PATCH",
+      token,
+    });
+
+    assert.equal(cancelled.status, 200, JSON.stringify(cancelled.body));
+    assert.equal(cancelled.body.id, bookingId);
+    assert.equal(cancelled.body.status, "cancelled");
+
+    // Cancelling again is no longer valid and must be reported, not ignored.
+    const again = await call(`/api/bookings/${bookingId}/cancel`, {
+      method: "PATCH",
+      token,
+    });
+    assert.equal(again.status, 409, JSON.stringify(again.body));
+  });
+});
+
+describe("PATCH /api/donations/:id/follow-up", () => {
+  test("returns 404 for a donation that does not exist", async () => {
+    const token = await login(ADMIN.email, ADMIN.password);
+    const result = await call(
+      "/api/donations/00000000-0000-4000-8000-000000000000/follow-up",
+      { method: "PATCH", token, body: {} },
+    );
+
+    assert.equal(result.status, 404, JSON.stringify(result.body));
+  });
+
+  test("returns 409 for a donation that is already followed up", async () => {
+    const donation = required(
+      (
+        await supabaseAdmin
+          .from("donations")
+          .select("id")
+          .eq("status", "followed_up")
+          .limit(1)
+          .single()
+      ).data,
+      "at least one followed_up donation",
+    );
+
+
+    const token = await login(ADMIN.email, ADMIN.password);
+    const result = await call(`/api/donations/${donation.id}/follow-up`, {
+      method: "PATCH",
+      token,
+      body: { staff_note: "should not apply" },
+    });
+
+    // Regression: the transition ran from any prior state.
+    assert.equal(result.status, 409, JSON.stringify(result.body));
+  });
+
+  test("accepts a follow-up with no staff note, per the contract", async () => {
+    const probe = await createProbeDonation();
+
+    try {
+      const token = await login(ADMIN.email, ADMIN.password);
+      const result = await call(`/api/donations/${probe.donation.id}/follow-up`, {
+        method: "PATCH",
+        token,
+        body: {},
+      });
+
+      assert.equal(result.status, 200, JSON.stringify(result.body));
+      assert.equal(result.body.status, "followed_up");
+      assert.equal(result.body.id, probe.donation.id);
+    } finally {
+      await probe.cleanup();
+    }
+  });
+});
+
+describe("GET /api/donations/export.csv", () => {
+  test("neutralises spreadsheet formulas in donor-supplied fields", async () => {
+    const payload = `=SUM(1+1)-${Date.now()}`;
+    const probe = await createProbeDonation({ donor_name: payload });
+
+    try {
+      const token = await login(ADMIN.email, ADMIN.password);
+      const response = await fetch(`${baseUrl}/api/donations/export.csv`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      assert.equal(response.status, 200);
+      const csv = await response.text();
+
+      assert.ok(
+        csv.includes(`"'${payload}"`),
+        "a leading '=' must be prefixed so Excel treats it as text",
+      );
+      assert.ok(
+        !csv.includes(`"${payload}"`),
+        "the raw formula must not reach the export unescaped",
+      );
+    } finally {
+      await probe.cleanup();
+    }
+  });
+
+  test("redacts the identity of anonymous donations", async () => {
+    const marker = `anon-probe-${Date.now()}`;
+    const probe = await createProbeDonation({
+      donor_name: marker,
+      donor_email: `${marker}@riverside.example`,
+      donor_phone: "+27 00 000 0000",
+      anonymous: true,
+    });
+
+    try {
+      const token = await login(ADMIN.email, ADMIN.password);
+      const csv = await (
+        await fetch(`${baseUrl}/api/donations/export.csv`, {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+      ).text();
+
+      assert.ok(
+        !csv.includes(marker),
+        "an anonymous donor's name and email must not be exported",
+      );
+    } finally {
+      await probe.cleanup();
+    }
+  });
+});
+
+describe("DELETE /api/campaigns/:id", () => {
+  test("returns 409 when the campaign still has donations", async () => {
+    const token = await login(ADMIN.email, ADMIN.password);
+    const result = await call(
+      "/api/campaigns/81111111-1111-4111-8111-111111111111",
+      { method: "DELETE", token },
+    );
+
+    // Regression: the FK violation surfaced as a generic 500.
+    assert.equal(result.status, 409, JSON.stringify(result.body));
   });
 });
