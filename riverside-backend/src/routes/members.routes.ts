@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { supabaseAdmin } from "../config/supabase";
+import { sendRowError } from "../lib/http";
 import { requireAuth } from "../middleware/auth";
 import { requireRole } from "../middleware/roles";
 import { requireReauth } from "../middleware/reauth";
@@ -76,8 +77,14 @@ router.get("/:id", requireAuth, requireRole("staff", "admin"), async (req, res) 
     .eq("id", req.params.id)
     .single();
     
-  if (error || !data) return res.status(404).json({ error: "Member not found" });
-  
+  if (error || !data)
+    return sendRowError(
+      res,
+      error,
+      "Member not found",
+      "Unable to load member",
+    );
+
   return res.status(200).json(data);
 });
 
@@ -146,8 +153,14 @@ router.patch("/:id/tier", requireAuth, requireRole("admin"), async (req, res) =>
     .select()
     .single();
     
-  if (error || !data) return res.status(404).json({ error: "Member not found" });
-  
+  if (error || !data)
+    return sendRowError(
+      res,
+      error,
+      "Member not found",
+      "Unable to update member tier",
+    );
+
   return res.status(200).json({ message: "Member tier updated", member: data });
 });
 
@@ -209,7 +222,12 @@ router.patch(
       .single();
 
     if (error || !data)
-      return res.status(404).json({ error: "Member not found" });
+      return sendRowError(
+        res,
+        error,
+        "Member not found",
+        "Unable to renew membership",
+      );
 
     return res
       .status(200)
