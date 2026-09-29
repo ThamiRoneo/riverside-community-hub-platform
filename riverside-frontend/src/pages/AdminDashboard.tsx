@@ -38,7 +38,7 @@ export default function AdminDashboard() {
 
   useEffect(() => {
     Promise.all([
-      apiGet<ReportRecord>("/reports"),
+      apiGet<ReportRecord>("/reports/summary"),
       apiGet<{ members: MemberRecord[] }>("/members"),
       apiGet<{ programmes: ProgrammeRecord[] }>("/programmes"),
       apiGet<{ campaigns: CampaignRecord[] }>("/campaigns"),
@@ -185,7 +185,7 @@ export default function AdminDashboard() {
   
   async function exportDonations() {
     try {
-      const blob = await apiDownload("/donations/export.csv");
+      const blob = await apiDownload("/donations/export");
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
