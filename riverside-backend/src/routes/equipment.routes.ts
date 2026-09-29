@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { supabaseAdmin } from "../config/supabase";
+import { sendRowError } from "../lib/http";
 import { requireAuth } from "../middleware/auth";
 import { requireRole } from "../middleware/roles";
 import {
@@ -56,7 +57,12 @@ router.patch(
       .select()
       .single();
     if (error || !data)
-      return res.status(404).json({ error: "Equipment not found" });
+      return sendRowError(
+        res,
+        error,
+        "Equipment not found",
+        "Unable to update equipment",
+      );
     return res
       .status(200)
       .json({ message: "Equipment updated", equipment: data });
