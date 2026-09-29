@@ -60,16 +60,19 @@ export const BookingRejectSchema = z.object({
   staff_note: z.string().min(1),
 });
 
+// Donation types and statuses are defined by the API contract and must match
+// the public.donation_type / donation_status enums (migration 0005).
+export const DonationTypeSchema = z.enum(["one_off", "pledge_intent"]);
+
 export const DonationCreateSchema = z.object({
-  campaign_id: z.string(),
+  campaign_id: z.string().uuid(),
   amount: z.number().positive(),
   donor_name: z.string().optional(),
-  donor_email: z.string().optional(),
+  donor_email: z.string().email().optional(),
   donor_phone: z.string().optional(),
-  type: z.enum(["one_off", "monthly"]).default("one_off"),
+  type: DonationTypeSchema.default("one_off"),
   anonymous: z.boolean().default(false),
   receipt_opt_in: z.boolean().default(false),
-  staff_note: z.string().optional(),
 });
 
 export const FacilityCreateSchema = z.object({
