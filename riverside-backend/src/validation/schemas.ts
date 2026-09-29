@@ -22,13 +22,22 @@ export const MemberCreateSchema = z.object({
   full_name: z.string().min(2),
 });
 
+// Must stay in sync with the public.user_role enum in migration 0001.
 export const MemberUpdateSchema = z.object({
-  role: z.enum(["visitor", "member", "staff", "admin"]),
+  role: z.enum(["member", "staff", "admin"]),
 });
 
+// Wire format uses `contact_phone` per the API contract; the profiles table
+// column is `phone`. The mapping belongs in the route, not the schema.
 export const MemberProfileUpdateSchema = z.object({
   full_name: z.string().min(2).optional(),
-  phone: z.string().max(30).optional(),
+  contact_phone: z.string().max(30).nullable().optional(),
+});
+
+// POST /api/profile/complete: identity is required, phone is not.
+export const ProfileCompleteSchema = z.object({
+  full_name: z.string().min(2),
+  contact_phone: z.string().max(30).nullable().optional(),
 });
 
 export const BookingCreateSchema = z
