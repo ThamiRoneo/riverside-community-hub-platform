@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { supabaseAdmin } from "../config/supabase";
+import { sendRowError } from "../lib/http";
 import { requireAuth } from "../middleware/auth";
 import {
   MemberProfileUpdateSchema,
@@ -54,8 +55,12 @@ async function loadProfile(userId: string) {
     .eq("id", userId)
     .single();
 
-  if (error || !data) return null;
-  return data as ProfileRow;
+  // Only a genuinely absent row becomes null; other failures surface as 500
+  // so a database problem is not reported to the user as "no profile".
+  if (error && error.code !== "PGRST116") {
+    throw new Error(error.message);
+  }
+  return (data as ProfileRow | null) ?? null;
 }
 
 // POST /api/profile/complete
@@ -74,14 +79,24 @@ router.post("/complete", requireAuth, async (req, res) => {
     .single();
 
   if (error || !data)
-    return res.status(404).json({ error: "Profile not found" });
+    return sendRowError(
+      res,
+      error,
+      "Profile not found",
+      "Unable to complete profile",
+    );
 
   return res.status(200).json(toProfileResponse(data as ProfileRow));
 });
 
 // GET /api/profile/me
 router.get("/me", requireAuth, async (req, res) => {
-  const profile = await loadProfile(req.user!.id);
+  let profile: ProfileRow | null;
+  try {
+    profile = await loadProfile(req.user!.id);
+  } catch {
+    return res.status(500).json({ error: "Unable to load profile" });
+  }
   if (!profile) return res.status(404).json({ error: "Profile not found" });
 
   return res.status(200).json(toProfileResponse(profile));
@@ -113,7 +128,12 @@ router.patch("/me", requireAuth, async (req, res) => {
 
   if (error) return res.status(500).json({ error: "Unable to update profile" });
 
-  const profile = await loadProfile(req.user!.id);
+  let profile: ProfileRow | null;
+  try {
+    profile = await loadProfile(req.user!.id);
+  } catch {
+    return res.status(500).json({ error: "Unable to load profile" });
+  }
   if (!profile) return res.status(404).json({ error: "Profile not found" });
 
   return res.status(200).json(toProfileResponse(profile));
