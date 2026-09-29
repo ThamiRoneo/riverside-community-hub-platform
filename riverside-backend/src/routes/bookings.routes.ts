@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { supabaseAdmin } from "../config/supabase";
+import { sendRowError } from "../lib/http";
 import { requireAuth } from "../middleware/auth";
 import { requireRole } from "../middleware/roles";
 import {
@@ -160,22 +161,48 @@ router.patch(
   },
 );
 
+// PATCH /api/bookings/:id/cancel
+// Member's own booking, and only while it is still pending or approved.
+// The previous implementation issued the UPDATE and trusted a null error,
+// which reported success even when zero rows matched.
 router.patch("/:id/cancel", requireAuth, async (req, res) => {
+  const { data: booking, error: lookupError } = await supabaseAdmin
+    .from("bookings")
+    .select("id, member_id, status")
+    .eq("id", req.params.id)
+    .single();
+
+  if (lookupError || !booking)
+    return sendRowError(
+      res,
+      lookupError,
+      "Booking not found",
+      "Unable to load booking",
+    );
+
+  if (booking.member_id !== req.user!.id)
+    return res.status(403).json({ error: "You can only cancel your own booking" });
+
+  if (!["pending", "approved"].includes(booking.status))
+    return res.status(409).json({
+      error: `A ${booking.status} booking cannot be cancelled`,
+    });
+
   const { error } = await supabaseAdmin
     .from("bookings")
     .update({ status: "cancelled" })
-    .eq("id", req.params.id)
-    .eq("member_id", req.user?.id)
-    .in("status", ["pending", "approved"]);
-  if (error) return res.status(500).json({ error: "Unable to cancel booking" });
+    .eq("id", req.params.id);
+
+  if (error)
+    return res.status(500).json({ error: "Unable to cancel booking" });
+
   await notifyBookingMember(
     req.params.id,
-    req.user?.id ?? "",
+    req.user!.id,
     "Your booking was cancelled.",
   );
-  return res
-    .status(200)
-    .json({ message: `Booking ${req.params.id} cancelled` });
+
+  return res.status(200).json({ id: req.params.id, status: "cancelled" });
 });
 
 export default router;
