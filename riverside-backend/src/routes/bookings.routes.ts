@@ -40,7 +40,10 @@ router.get("/", requireAuth, async (req, res) => {
   return res.status(200).json({ bookings: data ?? [] });
 });
 
-router.post("/", requireAuth, async (req, res) => {
+// Contract: POST /api/bookings is a member action. Without this guard any
+// authenticated user, including staff and admins, could book under their own
+// profile id and appear in the member booking list.
+router.post("/", requireAuth, requireRole("member"), async (req, res) => {
   const result = BookingCreateSchema.safeParse(req.body);
   if (!result.success)
     return res.status(400).json({ error: "Invalid payload" });
