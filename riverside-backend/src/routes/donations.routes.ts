@@ -1,14 +1,27 @@
 import { Router } from "express";
 import { supabaseAdmin } from "../config/supabase";
+import { sendRowError } from "../lib/http";
 import { attachUserIfPresent, requireAuth } from "../middleware/auth";
 import { requireRole } from "../middleware/roles";
 import { DonationCreateSchema } from "../validation/schemas";
 
 const router = Router();
 
+/**
+ * Neutralises spreadsheet formula injection. Donor-supplied fields reach the
+ * CSV and are opened in Excel by staff, so a leading = + - @ or a control
+ * character would otherwise be evaluated as a formula.
+ */
 function csvCell(value: unknown) {
   const text = value == null ? "" : String(value);
-  return `"${text.replace(/"/g, '""')}"`;
+  const safe = /^[=+\-@\t\r]/.test(text) ? `'${text}` : text;
+  return `"${safe.replace(/"/g, '""')}"`;
+}
+
+/** An anonymous donation must not expose the donor's identity in an export. */
+function redactAnonymous(donation: Record<string, unknown>) {
+  if (!donation.anonymous) return donation;
+  return { ...donation, donor_name: null, donor_email: null, donor_phone: null };
 }
 
 router.get(
@@ -58,11 +71,12 @@ router.get(
       "staff_note",
       "created_at",
     ];
-    const rows = (data ?? []).map((donation) =>
-      columns
-        .map((column) => csvCell(donation[column as keyof typeof donation]))
-        .join(","),
-    );
+    const rows = (data ?? []).map((donation) => {
+      const safe = redactAnonymous(donation as Record<string, unknown>);
+      return columns
+        .map((column) => csvCell(safe[column as keyof typeof donation]))
+        .join(",");
+    });
 
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     res.setHeader("Content-Disposition", "attachment; filename=donations.csv");
@@ -91,29 +105,54 @@ router.post("/", attachUserIfPresent, async (req, res) => {
   return res.status(201).json({ message: "Donation created", donation: data });
 });
 
+// PATCH /api/donations/:id/follow-up
+// Contract: staff_note is optional, the transition is only valid from
+// pending_followup, and anything else is a 409.
 router.patch(
   "/:id/follow-up",
   requireAuth,
   requireRole("staff", "admin"),
   async (req, res) => {
-    const { staff_note } = req.body as { staff_note: string };
-    if (!staff_note)
-      return res
-        .status(400)
-        .json({ error: "staff_note is required for follow-up" });
+    const { staff_note } = req.body as { staff_note?: string };
+
+    const { data: donation, error: lookupError } = await supabaseAdmin
+      .from("donations")
+      .select("id, status")
+      .eq("id", req.params.id)
+      .single();
+
+    if (lookupError || !donation)
+      return sendRowError(
+        res,
+        lookupError,
+        "Donation not found",
+        "Unable to load donation",
+      );
+
+    if (donation.status !== "pending_followup")
+      return res.status(409).json({
+        error: `A ${donation.status} donation cannot be followed up`,
+      });
+
     const { data, error } = await supabaseAdmin
       .from("donations")
-      .update({ status: "followed_up", staff_note })
+      .update({
+        status: "followed_up",
+        ...(staff_note ? { staff_note } : {}),
+      })
       .eq("id", req.params.id)
-      .select("id, status, staff_note")
+      .select("id, status")
       .single();
 
     if (error || !data)
-      return res.status(404).json({ error: "Donation not found" });
-    return res.status(200).json({
-      message: "Donation follow-up completed",
-      donation: data,
-    });
+      return sendRowError(
+        res,
+        error,
+        "Donation not found",
+        "Unable to complete follow-up",
+      );
+
+    return res.status(200).json({ id: data.id, status: data.status });
   },
 );
 
