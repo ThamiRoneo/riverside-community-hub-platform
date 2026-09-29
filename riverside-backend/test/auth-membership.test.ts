@@ -32,6 +32,12 @@ function required<T>(value: T | null | undefined, label: string): T {
   return value;
 }
 
+/** Removes a booking plus the notifications the API created for it. */
+async function removeProbeBooking(bookingId: string) {
+  await supabaseAdmin.from("notifications").delete().eq("booking_id", bookingId);
+  await supabaseAdmin.from("bookings").delete().eq("id", bookingId);
+}
+
 /**
  * Creates a donation and returns a cleanup that removes it.
  *
@@ -480,6 +486,8 @@ describe("PATCH /api/bookings/:id/cancel", () => {
       token,
     });
     assert.equal(again.status, 409, JSON.stringify(again.body));
+
+    await removeProbeBooking(bookingId);
   });
 });
 
@@ -539,14 +547,14 @@ describe("PATCH /api/donations/:id/follow-up", () => {
   });
 });
 
-describe("GET /api/donations/export.csv", () => {
+describe("GET /api/donations/export", () => {
   test("neutralises spreadsheet formulas in donor-supplied fields", async () => {
     const payload = `=SUM(1+1)-${Date.now()}`;
     const probe = await createProbeDonation({ donor_name: payload });
 
     try {
       const token = await login(ADMIN.email, ADMIN.password);
-      const response = await fetch(`${baseUrl}/api/donations/export.csv`, {
+      const response = await fetch(`${baseUrl}/api/donations/export`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       assert.equal(response.status, 200);
@@ -577,7 +585,7 @@ describe("GET /api/donations/export.csv", () => {
     try {
       const token = await login(ADMIN.email, ADMIN.password);
       const csv = await (
-        await fetch(`${baseUrl}/api/donations/export.csv`, {
+        await fetch(`${baseUrl}/api/donations/export`, {
           headers: { Authorization: `Bearer ${token}` },
         })
       ).text();
@@ -824,5 +832,181 @@ describe("campaign.current_amount integrity", () => {
         `${campaign.title} total must equal the sum of its donations`,
       );
     }
+  });
+});
+
+describe("access control: contract role matrix", () => {
+  const STAFF = { email: "staff@riverside.example", password: "Password123" };
+  const MEMBER = { email: "aisha@riverside.example", password: "Password123" };
+
+  test("donation export is admin-only; staff are refused", async () => {
+    const staffToken = await login(STAFF.email, STAFF.password);
+    const denied = await call("/api/donations/export", { token: staffToken });
+
+    // Regression: the export was reachable by staff, exposing donor contact
+    // details, while the contract grants it to admins only.
+    assert.equal(denied.status, 403, JSON.stringify(denied.body));
+
+    const adminToken = await login(ADMIN.email, ADMIN.password);
+    // The export returns text/csv, so check it without the JSON helper.
+    const allowed = await fetch(`${baseUrl}/api/donations/export`, {
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+    assert.equal(allowed.status, 200);
+    assert.match(allowed.headers.get("content-type") ?? "", /text\/csv/);
+  });
+
+  test("the removed /export.csv path is gone", async () => {
+    const token = await login(ADMIN.email, ADMIN.password);
+    const result = await call("/api/donations/export.csv", { token });
+
+    assert.equal(result.status, 404, JSON.stringify(result.body));
+  });
+
+  test("reports summary is reachable by staff, not only admins", async () => {
+    const staffToken = await login(STAFF.email, STAFF.password);
+    const staff = await call("/api/reports/summary", { token: staffToken });
+
+    // Regression: this was admin-only, locking staff out of the summary.
+    assert.equal(staff.status, 200, JSON.stringify(staff.body));
+
+    const memberToken = await login(MEMBER.email, MEMBER.password);
+    const member = await call("/api/reports/summary", { token: memberToken });
+    assert.equal(member.status, 403, JSON.stringify(member.body));
+  });
+
+  test("only an admin may delete a facility or equipment", async () => {
+    const staffToken = await login(STAFF.email, STAFF.password);
+
+    const facility = required(
+      (
+        await supabaseAdmin
+          .from("facilities")
+          .select("id")
+          .eq("active", true)
+          .limit(1)
+          .single()
+      ).data,
+      "an active facility",
+    );
+    const equipment = required(
+      (
+        await supabaseAdmin
+          .from("equipment")
+          .select("id")
+          .eq("active", true)
+          .limit(1)
+          .single()
+      ).data,
+      "active equipment",
+    );
+
+    // Regression: staff could deactivate resources, removing them from
+    // public booking. The contract makes deletion admin-only.
+    const deniedFacility = await call(`/api/facilities/${facility.id}`, {
+      method: "DELETE",
+      token: staffToken,
+    });
+    assert.equal(deniedFacility.status, 403, JSON.stringify(deniedFacility.body));
+
+    const deniedEquipment = await call(`/api/equipment/${equipment.id}`, {
+      method: "DELETE",
+      token: staffToken,
+    });
+    assert.equal(deniedEquipment.status, 403, JSON.stringify(deniedEquipment.body));
+
+    // Confirm nothing was actually deactivated by the refused calls.
+    const stillActive = required(
+      (
+        await supabaseAdmin
+          .from("facilities")
+          .select("active")
+          .eq("id", facility.id)
+          .single()
+      ).data,
+      "the facility row",
+    );
+    assert.equal(stillActive.active, true);
+  });
+
+  test("staff may create and edit programmes; only an admin may delete them", async () => {
+    const staffToken = await login(STAFF.email, STAFF.password);
+    const suffix = Date.now();
+
+    const created = await call("/api/programmes", {
+      method: "POST",
+      token: staffToken,
+      body: {
+        title: `Staff programme ${suffix}`,
+        description: "Created by staff",
+        age_range: "5-12",
+        schedule_info: "Mon 16:00",
+        active: true,
+      },
+    });
+
+    // Regression: programme creation was admin-only, but the contract
+    // grants it to staff and admins alike.
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+
+    const programmeId = created.body.programme.id;
+
+    try {
+
+      const updated = await call(`/api/programmes/${programmeId}`, {
+        method: "PATCH",
+        token: staffToken,
+        body: { title: `Staff programme ${suffix} edited` },
+      });
+      assert.equal(updated.status, 200, JSON.stringify(updated.body));
+
+      const staffDelete = await call(`/api/programmes/${programmeId}`, {
+        method: "DELETE",
+        token: staffToken,
+      });
+      assert.equal(staffDelete.status, 403, JSON.stringify(staffDelete.body));
+    } finally {
+      // Delete by id: the update above renames the programme, so matching on
+      // the original title would no longer find it.
+      await supabaseAdmin.from("programmes").delete().eq("id", programmeId);
+    }
+  });
+
+  test("only a member may create a booking", async () => {
+    const start = new Date(Date.now() + 150 * 86_400_000).toISOString();
+    const end = new Date(Date.now() + 151 * 86_400_000).toISOString();
+    const facility = required(
+      (
+        await supabaseAdmin
+          .from("facilities")
+          .select("id")
+          .eq("active", true)
+          .limit(1)
+          .single()
+      ).data,
+      "an active facility",
+    );
+
+    const body = { facility_id: facility.id, start_at: start, end_at: end };
+
+    // Regression: any authenticated user, including staff, could create a
+    // booking attributed to their own profile.
+    const staffToken = await login(STAFF.email, STAFF.password);
+    const staff = await call("/api/bookings", {
+      method: "POST",
+      token: staffToken,
+      body,
+    });
+    assert.equal(staff.status, 403, JSON.stringify(staff.body));
+
+    const memberToken = await login(MEMBER.email, MEMBER.password);
+    const member = await call("/api/bookings", {
+      method: "POST",
+      token: memberToken,
+      body,
+    });
+    assert.equal(member.status, 201, JSON.stringify(member.body));
+
+    await removeProbeBooking(member.body.booking.id);
   });
 });
