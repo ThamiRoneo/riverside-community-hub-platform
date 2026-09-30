@@ -3,17 +3,15 @@ import { useAuth } from "../context/AuthContext";
 import { apiGet, apiPost, apiPatch } from "../lib/api";
 import type {
   BookingRecord,
-  EquipmentRecord,
-  FacilityRecord,
   MemberProfileRecord,
   NotificationRecord,
+  ResourceRecord,
 } from "../types";
 
 export default function MemberDashboard() {
   const { user } = useAuth();
   const [bookings, setBookings] = useState<BookingRecord[]>([]);
-  const [facilities, setFacilities] = useState<FacilityRecord[]>([]);
-  const [equipment, setEquipment] = useState<EquipmentRecord[]>([]);
+  const [resources, setResources] = useState<ResourceRecord[]>([]);
   const [profile, setProfile] = useState<MemberProfileRecord | null>(null);
   const [membershipStatus, setMembershipStatus] = useState("not_set");
   const [profileName, setProfileName] = useState("");
@@ -22,34 +20,35 @@ export default function MemberDashboard() {
   const [resourceId, setResourceId] = useState("");
   const [startAt, setStartAt] = useState("");
   const [endAt, setEndAt] = useState("");
+  const [purpose, setPurpose] = useState("");
+  const [peopleCount, setPeopleCount] = useState("1");
+  const [accessibilityNotes, setAccessibilityNotes] = useState("");
   const [status, setStatus] = useState<"loading" | "ready" | "error">(
     "loading",
   );
   const [message, setMessage] = useState("");
 
+  // One catalogue, split only so the picker can group its options.
+  const rooms = resources.filter((resource) => resource.type === "room");
+  const equipment = resources.filter((resource) => resource.type === "equipment");
+
   async function loadBookings() {
-    const response = await apiGet<{ bookings: BookingRecord[] }>("/bookings");
+    const response = await apiGet<{ bookings: BookingRecord[] }>(
+      "/bookings/mine",
+    );
     setBookings(response.bookings);
   }
 
   useEffect(() => {
     Promise.all([
       loadBookings(),
-      apiGet<{ facilities: FacilityRecord[] }>("/facilities"),
-      apiGet<{ equipment: EquipmentRecord[] }>("/equipment"),
+      apiGet<{ resources: ResourceRecord[] }>("/resources?page_size=100"),
       apiGet<MemberProfileRecord>("/profile/me"),
       apiGet<{ notifications: NotificationRecord[] }>("/notifications"),
     ])
       .then(
-        ([
-          ,
-          facilityResponse,
-          equipmentResponse,
-          profileResponse,
-          notificationResponse,
-        ]) => {
-          setFacilities(facilityResponse.facilities);
-          setEquipment(equipmentResponse.equipment);
+        ([, resourceResponse, profileResponse, notificationResponse]) => {
+          setResources(resourceResponse.resources);
           setProfile(profileResponse);
           setMembershipStatus(
             profileResponse.expiring_soon ? "expiring_soon" : "active",
@@ -66,16 +65,17 @@ export default function MemberDashboard() {
   async function handleBookingSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setMessage("");
-    const isFacility = facilities.some(
-      (facility) => facility.id === resourceId,
-    );
     try {
       await apiPost("/bookings", {
-        ...(isFacility
-          ? { facility_id: resourceId }
-          : { equipment_id: resourceId }),
-        start_at: new Date(startAt).toISOString(),
-        end_at: new Date(endAt).toISOString(),
+        resource_id: resourceId,
+        start_time: new Date(startAt).toISOString(),
+        end_time: new Date(endAt).toISOString(),
+        purpose,
+        contact_phone: profilePhone,
+        people_count: Number(peopleCount),
+        ...(accessibilityNotes
+          ? { accessibility_notes: accessibilityNotes }
+          : {}),
       });
       await loadBookings();
       setMessage("Booking request submitted for staff approval.");
@@ -230,11 +230,11 @@ export default function MemberDashboard() {
             value={resourceId}
             onChange={(event) => setResourceId(event.target.value)}
           >
-            <option value="">Choose a facility or equipment</option>
-            <optgroup label="Facilities">
-              {facilities.map((facility) => (
-                <option key={facility.id} value={facility.id}>
-                  {facility.name}
+            <option value="">Choose a room or equipment</option>
+            <optgroup label="Rooms">
+              {rooms.map((room) => (
+                <option key={room.id} value={room.id}>
+                  {room.name}
                 </option>
               ))}
             </optgroup>
@@ -262,6 +262,34 @@ export default function MemberDashboard() {
               type="datetime-local"
               value={endAt}
               onChange={(event) => setEndAt(event.target.value)}
+            />
+          </label>
+          <label>
+            Purpose
+            <input
+              required
+              minLength={2}
+              value={purpose}
+              onChange={(event) => setPurpose(event.target.value)}
+              placeholder="Community meeting"
+            />
+          </label>
+          <label>
+            Number of people
+            <input
+              required
+              type="number"
+              min={1}
+              value={peopleCount}
+              onChange={(event) => setPeopleCount(event.target.value)}
+            />
+          </label>
+          <label>
+            Accessibility needs
+            <textarea
+              value={accessibilityNotes}
+              onChange={(event) => setAccessibilityNotes(event.target.value)}
+              rows={2}
             />
           </label>
           <button
@@ -316,11 +344,7 @@ export default function MemberDashboard() {
               }}
             >
               <div>
-                <strong>
-                  {booking.facilities?.name ??
-                    booking.equipment?.name ??
-                    "Resource"}
-                </strong>
+                <strong>{booking.resource_name ?? "Resource"}</strong>
                 <small>{new Date(booking.start_at).toLocaleString()}</small>
               </div>
               <span

@@ -56,19 +56,17 @@ export interface ProgrammeRecord {
   image_url: string | null;
 }
 
-export interface FacilityRecord {
+/** Rooms and equipment share one catalogue endpoint, so one record covers both. */
+export type ResourceType = "room" | "equipment";
+
+export interface ResourceRecord {
   id: string;
   name: string;
+  type: ResourceType;
   description: string | null;
   capacity: number | null;
-  hourly_rate: number;
-}
-
-export interface EquipmentRecord {
-  id: string;
-  name: string;
-  description: string | null;
-  quantity: number;
+  /** Rooms are charged hourly; equipment has no rate. */
+  hourly_rate: number | null;
 }
 
 export interface CampaignRecord {
@@ -82,15 +80,19 @@ export interface CampaignRecord {
 export interface BookingRecord {
   id: string;
   member_id: string;
-  facility_id: string | null;
-  equipment_id: string | null;
+  resource_id: string | null;
+  resource_type: ResourceType | null;
+  resource_name: string | null;
+  member_name: string | null;
+  purpose: string | null;
+  contact_phone: string | null;
+  people_count: number | null;
   start_at: string;
   end_at: string;
   status: "pending" | "approved" | "rejected" | "cancelled";
   staff_note?: string | null;
-  profiles?: { full_name?: string; email?: string } | null;
-  facilities?: { name?: string } | null;
-  equipment?: { name?: string } | null;
+  /** Only the staff queue reports a clash with an already-approved booking. */
+  has_conflict?: boolean;
 }
 
 export interface ReportRecord {
