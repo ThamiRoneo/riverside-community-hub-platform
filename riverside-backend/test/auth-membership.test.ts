@@ -24,6 +24,13 @@ let testUserId: string | null = null;
 
 const uniqueEmail = () => `authtest${Date.now()}${Math.floor(Math.random() * 1e6)}@riverside.com`;
 
+// Signup and invite go through GoTrue and send a real email, and the send quota
+// is per project and shared across everyone running the suite. Repeated runs
+// silently exhausted it, so the mail-sending cases are opt-in: set
+// RCH_EMAIL_TESTS=1 to spend a message on them. Everything else creates users
+// through the admin API, which sends nothing.
+const EMAIL_TESTS = process.env.RCH_EMAIL_TESTS === "1";
+
 /** Narrows a seed-dependent lookup so a missing row fails loudly. */
 function required<T>(value: T | null | undefined, label: string): T {
   if (value === null || value === undefined) {
@@ -158,18 +165,16 @@ after(async () => {
 
 describe("signup", () => {
   test("creates a profile without colliding with the auth trigger", async (t) => {
+    if (!EMAIL_TESTS) {
+      t.skip("set RCH_EMAIL_TESTS=1 to run; signup sends a real email");
+      return;
+    }
+
     const email = uniqueEmail();
     const result = await call("/api/auth/signup", {
       method: "POST",
       body: { email, password: TEST_PASSWORD, full_name: "Auth Test" },
     });
-
-    // Supabase rate-limits outbound signup mail per project. That is an
-    // environment constraint, not a regression, so do not report it as one.
-    if (result.status === 400 && /rate limit/i.test(JSON.stringify(result.body))) {
-      t.skip(`signup rate limited by Supabase: ${result.body.error}`);
-      return;
-    }
 
     assert.equal(
       result.status,
@@ -1466,5 +1471,76 @@ describe("access control: contract role matrix", () => {
     assert.equal(member.status, 201, JSON.stringify(member.body));
 
     await removeProbeBooking(member.body.booking.id);
+  });
+});
+
+describe("staff invite", () => {
+  const STAFF = { email: "staff@riverside.example", password: "Password123" };
+
+  const reauthHeader = async (token: string) => {
+    const reauth = await call("/api/auth/reauthenticate", {
+      method: "POST",
+      token,
+      body: { email: ADMIN.email, password: ADMIN.password },
+    });
+    return { "X-Reauth-Token": reauth.body.reauth_token as string };
+  };
+
+  // Both refusals happen in middleware, before any mail is sent, so they cost
+  // no quota and stay in the default run.
+  test("is admin-only and demands reauthentication", async () => {
+    const staffToken = await login(STAFF.email, STAFF.password);
+    const asStaff = await call("/api/staff/invite", {
+      method: "POST",
+      token: staffToken,
+      body: { email: uniqueEmail(), role: "staff" },
+    });
+    assert.equal(asStaff.status, 403, JSON.stringify(asStaff.body));
+
+    const adminToken = await login(ADMIN.email, ADMIN.password);
+    const noReauth = await call("/api/staff/invite", {
+      method: "POST",
+      token: adminToken,
+      body: { email: uniqueEmail(), role: "staff" },
+    });
+    assert.equal(noReauth.status, 401, JSON.stringify(noReauth.body));
+  });
+
+  test("assigns the admin's chosen role instead of the trigger default", async (t) => {
+    if (!EMAIL_TESTS) {
+      t.skip("set RCH_EMAIL_TESTS=1 to run; inviting sends a real email");
+      return;
+    }
+
+    const adminToken = await login(ADMIN.email, ADMIN.password);
+    const headers = await reauthHeader(adminToken);
+    let inviteId: string | null = null;
+
+    try {
+      const result = await call("/api/staff/invite", {
+        method: "POST",
+        token: adminToken,
+        headers,
+        body: { email: uniqueEmail(), role: "staff" },
+      });
+
+      assert.equal(result.status, 201, JSON.stringify(result.body));
+      assert.equal(result.body.status, "pending");
+      inviteId = result.body.invite_id as string;
+      assert.ok(inviteId, "the contract requires invite_id");
+
+      const { data: profile, error } = await supabaseAdmin
+        .from("profiles")
+        .select("role")
+        .eq("id", inviteId)
+        .single();
+
+      assert.equal(error, null);
+      // Regression: the auth trigger creates every profile as a member, so the
+      // role the admin picked was dropped and the invitee got no access.
+      assert.equal(profile.role, "staff");
+    } finally {
+      if (inviteId) await supabaseAdmin.auth.admin.deleteUser(inviteId);
+    }
   });
 });
