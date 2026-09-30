@@ -18,12 +18,19 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
 
   const { data: profile, error: profileError } = await supabaseAdmin
     .from("profiles")
-    .select("role")
+    .select("role, active")
     .eq("id", data.user.id)
     .single();
 
   if (profileError || !profile) {
     return res.status(403).json({ error: "No profile found for user" });
+  }
+
+  // Deactivated accounts keep their history and their password but lose access.
+  // Their token is still valid, so the check has to live here rather than in
+  // the login response.
+  if (profile.active === false) {
+    return res.status(403).json({ error: "This account has been deactivated" });
   }
 
   req.user = {
@@ -47,11 +54,13 @@ export async function attachUserIfPresent(req: Request, _res: Response, next: Ne
 
   const { data: profile } = await supabaseAdmin
     .from("profiles")
-    .select("role")
+    .select("role, active")
     .eq("id", data.user.id)
     .single();
 
-  if (profile) {
+  // A deactivated account is treated as absent here too, otherwise a public
+  // route with an optional session would still act on its behalf.
+  if (profile && profile.active !== false) {
     req.user = { id: data.user.id, email: data.user.email, role: profile.role as Role };
     req.accessToken = token;
   }
