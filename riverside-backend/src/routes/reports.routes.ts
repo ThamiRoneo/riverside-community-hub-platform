@@ -175,6 +175,7 @@ router.get("/summary", requireAuth, requireRole("staff", "admin"), async (req, r
       .from("profiles")
       .select("id", { count: "exact", head: true })
       .eq("role", "member")
+      .eq("active", true)
       .gte("created_at", window.from.toISOString());
     return open ? query : query.lt("created_at", window.to.toISOString());
   };
@@ -183,10 +184,12 @@ router.get("/summary", requireAuth, requireRole("staff", "admin"), async (req, r
     await Promise.all([
       bookingsIn(current, true),
       donationsIn(current, true),
+      // A deactivated profile keeps its history but is not an active member.
       supabaseAdmin
         .from("profiles")
         .select("id", { count: "exact", head: true })
-        .eq("role", "member"),
+        .eq("role", "member")
+        .eq("active", true),
       membersJoinedIn(current, true),
       bookingsIn(previous, false),
       donationsIn(previous, false),
