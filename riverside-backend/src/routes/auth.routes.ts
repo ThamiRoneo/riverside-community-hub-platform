@@ -91,12 +91,19 @@ router.post("/login", async (req, res) => {
 
   const { data: profile, error: profileError } = await supabaseAdmin
     .from("profiles")
-    .select("role, full_name, membership_tier, phone, membership_expires_at, created_at")
+    .select(
+      "role, full_name, membership_tier, phone, membership_expires_at, created_at, active",
+    )
     .eq("id", data.user.id)
     .single();
 
   if (profileError || !profile)
     return res.status(403).json({ error: "No profile found for user" });
+
+  // Refused here rather than handed a session that every later request rejects,
+  // so the person is told why instead of seeing a loop of 403s.
+  if (profile.active === false)
+    return res.status(403).json({ error: "This account has been deactivated" });
 
   return res.status(200).json({
     message: "Logged in successfully",
