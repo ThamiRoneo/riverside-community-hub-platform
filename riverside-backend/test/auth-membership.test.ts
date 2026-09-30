@@ -22,6 +22,16 @@ let server: Server;
 let baseUrl: string;
 let testUserId: string | null = null;
 
+/** POST /api/bookings body in the contract's shape. */
+const bookingRequest = (resourceId: string, start: string, end: string) => ({
+  resource_id: resourceId,
+  start_time: start,
+  end_time: end,
+  purpose: "Community session",
+  contact_phone: "0721234567",
+  people_count: 4,
+});
+
 const uniqueEmail = () => `authtest${Date.now()}${Math.floor(Math.random() * 1e6)}@riverside.com`;
 
 // Signup and invite go through GoTrue and send a real email, and the send quota
@@ -112,16 +122,21 @@ async function login(email: string, password: string) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password }),
     });
+    const body = await response.json();
     assert.equal(
       response.status,
       200,
-      `login should succeed for ${email}, got ${response.status}`,
+      `login should succeed for ${email}, got ${response.status}: ${JSON.stringify(body)}`,
     );
-    const body = await response.json();
     return body.session.access_token as string;
   })();
 
   sessionTokens.set(email, attempt);
+  // A cached rejection would make every later login for this account fail too,
+  // turning one transient error into a cascade of confusing ones.
+  attempt.catch(() => {
+    if (sessionTokens.get(email) === attempt) sessionTokens.delete(email);
+  });
   return attempt;
 }
 
@@ -491,11 +506,11 @@ describe("PATCH /api/bookings/:id/cancel", () => {
     const created = await call("/api/bookings", {
       method: "POST",
       token,
-      body: { facility_id: facility.id, start_at: start, end_at: end },
+      body: bookingRequest(facility.id, start, end),
     });
     assert.equal(created.status, 201, JSON.stringify(created.body));
 
-    const bookingId = created.body.booking.id;
+    const bookingId = created.body.id;
     const cancelled = await call(`/api/bookings/${bookingId}/cancel`, {
       method: "PATCH",
       token,
@@ -1366,13 +1381,13 @@ describe("access control: contract role matrix", () => {
 
     // Regression: staff could deactivate resources, removing them from
     // public booking. The contract makes deletion admin-only.
-    const deniedFacility = await call(`/api/facilities/${facility.id}`, {
+    const deniedFacility = await call(`/api/resources/${facility.id}`, {
       method: "DELETE",
       token: staffToken,
     });
     assert.equal(deniedFacility.status, 403, JSON.stringify(deniedFacility.body));
 
-    const deniedEquipment = await call(`/api/equipment/${equipment.id}`, {
+    const deniedEquipment = await call(`/api/resources/${equipment.id}`, {
       method: "DELETE",
       token: staffToken,
     });
@@ -1450,7 +1465,7 @@ describe("access control: contract role matrix", () => {
       "an active facility",
     );
 
-    const body = { facility_id: facility.id, start_at: start, end_at: end };
+    const body = bookingRequest(facility.id, start, end);
 
     // Regression: any authenticated user, including staff, could create a
     // booking attributed to their own profile.
@@ -1470,7 +1485,7 @@ describe("access control: contract role matrix", () => {
     });
     assert.equal(member.status, 201, JSON.stringify(member.body));
 
-    await removeProbeBooking(member.body.booking.id);
+    await removeProbeBooking(member.body.id);
   });
 });
 
@@ -1542,5 +1557,353 @@ describe("staff invite", () => {
     } finally {
       if (inviteId) await supabaseAdmin.auth.admin.deleteUser(inviteId);
     }
+  });
+});
+
+describe("resources: the unified room and equipment surface", () => {
+  const STAFF = { email: "staff@riverside.example", password: "Password123" };
+
+  /** A day far enough out that no seeded booking can reach it. */
+  const quietDay = "2099-06-15";
+
+  const firstResourceOf = async (type: "room" | "equipment") =>
+    required(
+      (
+        await call(`/api/resources?type=${type}&page_size=1`)
+      ).body.resources?.[0],
+      `a ${type} resource`,
+    );
+
+  test("lists both kinds through one shape, without a token", async () => {
+    const result = await call("/api/resources");
+
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    assert.ok(Array.isArray(result.body.resources));
+    assert.equal(typeof result.body.total, "number");
+
+    const types = new Set<string>();
+    for (const resource of result.body.resources) {
+      for (const field of ["id", "name", "type", "capacity", "description"])
+        assert.ok(field in resource, `${field} is required by the contract`);
+      types.add(resource.type);
+    }
+    // The regression: rooms and equipment lived on separate endpoints, so a
+    // client had to call both and merge before it could show one catalogue.
+    assert.ok(types.has("room"), "rooms must appear");
+    assert.ok(types.has("equipment"), "equipment must appear");
+  });
+
+  test("filters by type, capacity and search, and rejects a bad type", async () => {
+    const rooms = await call("/api/resources?type=room");
+    assert.equal(rooms.status, 200);
+    for (const resource of rooms.body.resources)
+      assert.equal(resource.type, "room");
+
+    const big = await call("/api/resources?capacity_min=20");
+    assert.equal(big.status, 200);
+    for (const resource of big.body.resources)
+      assert.ok(resource.capacity >= 20, `${resource.name} is under 20`);
+
+    const target = await firstResourceOf("room");
+    const needle = target.name.split(" ")[0];
+    const found = await call(`/api/resources?search=${encodeURIComponent(needle)}`);
+    assert.equal(found.status, 200);
+    assert.ok(
+      found.body.resources.some((r: { id: string }) => r.id === target.id),
+      `searching "${needle}" must find ${target.name}`,
+    );
+
+    const bad = await call("/api/resources?type=garden");
+    assert.equal(bad.status, 400, JSON.stringify(bad.body));
+  });
+
+  test("availability covers 09:00 to 17:00 in hourly slots", async () => {
+    const room = await firstResourceOf("room");
+    const result = await call(
+      `/api/resources/${room.id}/availability?date=${quietDay}`,
+    );
+
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    assert.equal(result.body.slots.length, 8);
+
+    const [first, last] = [result.body.slots[0], result.body.slots.at(-1)];
+    assert.equal(first.start_time, `${quietDay}T09:00:00.000Z`);
+    assert.equal(last.end_time, `${quietDay}T17:00:00.000Z`);
+    for (const slot of result.body.slots)
+      assert.equal(slot.status, "available", "the quiet day has no bookings");
+  });
+
+  test("a booked hour reads unavailable and leaves the rest open", async () => {
+    const room = await firstResourceOf("room");
+    const { data: booking, error } = await supabaseAdmin
+      .from("bookings")
+      .insert({
+        member_id: "11111111-1111-4111-8111-111111111111",
+        facility_id: room.id,
+        start_at: `${quietDay}T10:00:00.000Z`,
+        end_at: `${quietDay}T11:30:00.000Z`,
+        status: "approved",
+        purpose: "Availability probe",
+      })
+      .select("id")
+      .single();
+    assert.equal(error, null, "probe booking must be insertable");
+
+    try {
+      const result = await call(
+        `/api/resources/${room.id}/availability?date=${quietDay}`,
+      );
+      const statuses = result.body.slots.map((s: { status: string }) => s.status);
+
+      // 09:00 free, the 10:00 slot is inside the booking and so is 11:00,
+      // because the booking runs to 11:30.
+      assert.equal(statuses[0], "available");
+      assert.equal(statuses[1], "unavailable");
+      assert.equal(statuses[2], "unavailable");
+      assert.equal(statuses[3], "available");
+    } finally {
+      await supabaseAdmin.from("bookings").delete().eq("id", booking!.id);
+    }
+  });
+
+  test("availability rejects a missing or impossible date", async () => {
+    const room = await firstResourceOf("room");
+
+    const missing = await call(`/api/resources/${room.id}/availability`);
+    assert.equal(missing.status, 400);
+
+    const impossible = await call(
+      `/api/resources/${room.id}/availability?date=2099-02-31`,
+    );
+    assert.equal(impossible.status, 400, JSON.stringify(impossible.body));
+
+    const unknown = await call(
+      `/api/resources/44444444-4444-4444-8444-444444444444/availability?date=${quietDay}`,
+    );
+    assert.equal(unknown.status, 404);
+  });
+
+  test("staff create and edit; only an admin deletes", async () => {
+    const staffToken = await login(STAFF.email, STAFF.password);
+    const adminToken = await login(ADMIN.email, ADMIN.password);
+    const suffix = Date.now();
+    // Every probe is recorded as it is created. Tracking only one of them let
+    // the equipment probe survive the cleanup and pile up in the catalogue.
+    const probes: { table: "facilities" | "equipment"; id: string }[] = [];
+
+    try {
+      const created = await call("/api/resources", {
+        method: "POST",
+        token: staffToken,
+        body: {
+          name: `Probe room ${suffix}`,
+          type: "room",
+          capacity: 8,
+          description: "Created by the resource test",
+        },
+      });
+      assert.equal(created.status, 201, JSON.stringify(created.body));
+      const createdId = created.body.resource.id as string;
+      probes.push({ table: "facilities", id: createdId });
+      assert.equal(created.body.resource.type, "room");
+
+      const equipment = await call("/api/resources", {
+        method: "POST",
+        token: staffToken,
+        body: {
+          name: `Probe kit ${suffix}`,
+          type: "equipment",
+          capacity: 3,
+          description: "Created by the resource test",
+        },
+      });
+      assert.equal(equipment.status, 201, JSON.stringify(equipment.body));
+      assert.equal(equipment.body.resource.type, "equipment");
+      probes.push({
+        table: "equipment",
+        id: equipment.body.resource.id as string,
+      });
+
+      const edited = await call(`/api/resources/${createdId}`, {
+        method: "PATCH",
+        token: staffToken,
+        body: { capacity: 12 },
+      });
+      assert.equal(edited.status, 200, JSON.stringify(edited.body));
+      assert.equal(edited.body.resource.capacity, 12);
+
+      // Regression: staff could delete, but the contract reserves deletion for
+      // admins because it removes a resource from public booking.
+      const staffDelete = await call(`/api/resources/${createdId}`, {
+        method: "DELETE",
+        token: staffToken,
+      });
+      assert.equal(staffDelete.status, 403);
+
+      const adminDelete = await call(`/api/resources/${createdId}`, {
+        method: "DELETE",
+        token: adminToken,
+      });
+      assert.equal(adminDelete.status, 204);
+
+      const gone = await call(`/api/resources/${createdId}`);
+      assert.equal(gone.status, 404, "a deleted resource must not be listed");
+    } finally {
+      for (const probe of probes)
+        await supabaseAdmin.from(probe.table).delete().eq("id", probe.id);
+    }
+  });
+
+  test("the retired /facilities and /equipment paths are gone", async () => {
+    const facilities = await call("/api/facilities");
+    assert.equal(facilities.status, 404, JSON.stringify(facilities.body));
+
+    const equipment = await call("/api/equipment");
+    assert.equal(equipment.status, 404, JSON.stringify(equipment.body));
+  });
+});
+
+describe("bookings: own list and the staff queue", () => {
+  const STAFF = { email: "staff@riverside.example", password: "Password123" };
+  const MEMBER = { email: "aisha@riverside.example", password: "Password123" };
+
+  test("GET /api/bookings/mine is member-only and splits upcoming from past", async () => {
+    const memberToken = await login(MEMBER.email, MEMBER.password);
+    const result = await call("/api/bookings/mine", { token: memberToken });
+
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    assert.ok(Array.isArray(result.body.bookings));
+    assert.equal(typeof result.body.total, "number");
+    assert.equal(typeof result.body.upcoming_count, "number");
+    assert.equal(typeof result.body.past_count, "number");
+    assert.equal(
+      result.body.upcoming_count + result.body.past_count,
+      result.body.total,
+      "every booking is either upcoming or past",
+    );
+
+    // The list must never leak somebody else's booking.
+    assert.ok(
+      result.body.bookings.every((b: { member_id: string }) =>
+        Boolean(b.member_id),
+      ),
+    );
+    assert.ok(
+      result.body.bookings.every((b: { id: string }) => b.id),
+    );
+
+    const staffToken = await login(STAFF.email, STAFF.password);
+    const denied = await call("/api/bookings/mine", { token: staffToken });
+    assert.equal(denied.status, 403, JSON.stringify(denied.body));
+
+    const badStatus = await call("/api/bookings/mine?status=nonsense", {
+      token: memberToken,
+    });
+    assert.equal(badStatus.status, 400, JSON.stringify(badStatus.body));
+  });
+
+  test("GET /api/bookings/queue reports conflicts and honours filters", async () => {
+    const staffToken = await login(STAFF.email, STAFF.password);
+    const result = await call("/api/bookings/queue", { token: staffToken });
+
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    assert.ok(Array.isArray(result.body.bookings));
+    assert.equal(typeof result.body.total, "number");
+    assert.equal(typeof result.body.conflict_count, "number");
+
+    for (const booking of result.body.bookings) {
+      assert.equal(
+        typeof booking.has_conflict,
+        "boolean",
+        "every queue item carries has_conflict",
+      );
+      assert.ok(booking.resource_id, "every booking resolves to a resource");
+    }
+    assert.ok(
+      result.body.conflict_count <= result.body.total,
+      "conflict_count cannot exceed the filtered set",
+    );
+
+    const rooms = await call("/api/bookings/queue?resource_type=room", {
+      token: staffToken,
+    });
+    assert.equal(rooms.status, 200);
+    for (const booking of rooms.body.bookings)
+      assert.equal(booking.resource_type, "room");
+
+    const badType = await call("/api/bookings/queue?resource_type=garden", {
+      token: staffToken,
+    });
+    assert.equal(badType.status, 400, JSON.stringify(badType.body));
+
+    const memberToken = await login(MEMBER.email, MEMBER.password);
+    const denied = await call("/api/bookings/queue", { token: memberToken });
+    assert.equal(denied.status, 403, JSON.stringify(denied.body));
+  });
+
+  test("an approved booking makes a slot unavailable to a second request", async () => {
+    const room = required(
+      (await call("/api/resources?type=room&page_size=1")).body.resources?.[0],
+      "an active room",
+    );
+    const start = new Date(Date.now() + 200 * 86_400_000).toISOString();
+    const end = new Date(Date.now() + 201 * 86_400_000).toISOString();
+
+    const { data: taken, error } = await supabaseAdmin
+      .from("bookings")
+      .insert({
+        member_id: "22222222-2222-4222-8222-222222222222",
+        facility_id: room.id,
+        start_at: start,
+        end_at: end,
+        status: "approved",
+        purpose: "Approved probe",
+      })
+      .select("id")
+      .single();
+    assert.equal(error, null);
+
+    try {
+      const memberToken = await login(MEMBER.email, MEMBER.password);
+      const clash = await call("/api/bookings", {
+        method: "POST",
+        token: memberToken,
+        body: bookingRequest(room.id, start, end),
+      });
+
+      // The contract names the exact error string clients branch on.
+      assert.equal(clash.status, 409, JSON.stringify(clash.body));
+      assert.equal(clash.body.error, "slot_unavailable");
+    } finally {
+      await supabaseAdmin.from("bookings").delete().eq("id", taken!.id);
+    }
+  });
+
+  test("an unknown resource and a reversed window are rejected", async () => {
+    const memberToken = await login(MEMBER.email, MEMBER.password);
+    const start = new Date(Date.now() + 200 * 86_400_000).toISOString();
+    const end = new Date(Date.now() + 201 * 86_400_000).toISOString();
+
+    const unknown = await call("/api/bookings", {
+      method: "POST",
+      token: memberToken,
+      body: bookingRequest(
+        "44444444-4444-4444-8444-444444444444",
+        start,
+        end,
+      ),
+    });
+    assert.equal(unknown.status, 404, JSON.stringify(unknown.body));
+
+    const reversed = await call("/api/bookings", {
+      method: "POST",
+      token: memberToken,
+      body: bookingRequest(
+        (await call("/api/resources?type=room&page_size=1")).body.resources[0].id,
+        end,
+        start,
+      ),
+    });
+    assert.equal(reversed.status, 400, JSON.stringify(reversed.body));
   });
 });
