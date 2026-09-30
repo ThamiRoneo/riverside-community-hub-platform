@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { supabaseAdmin } from "../config/supabase";
+import { csvCell, csvDocument } from "../lib/csv";
 import { requireAuth } from "../middleware/auth";
 import { requireRole } from "../middleware/roles";
 
@@ -9,16 +10,12 @@ const router = Router();
 const RANGES = ["week", "month", "quarter", "year"] as const;
 type RangeName = (typeof RANGES)[number];
 
-/**
- * Months each range covers. "month" is 0 here only because it is a calendar
- * month, which needs different arithmetic from the rolling windows; the others
- * are simply N months back from now.
- */
-const RANGE_MONTHS: Record<RangeName, number> = {
-  week: 0,
-  month: 1,
-  quarter: 3,
-  year: 12,
+/** Length of each range in days. */
+const RANGE_DAYS: Record<RangeName, number> = {
+  week: 7,
+  month: 30,
+  quarter: 91,
+  year: 365,
 };
 
 const BOOKING_STATUSES = ["pending", "approved", "rejected", "cancelled"];
@@ -27,28 +24,67 @@ const BOOKING_STATUSES = ["pending", "approved", "rejected", "cancelled"];
  * The window a range name covers. periodsBack shifts whole periods: 0 is the
  * current window and 1 is the one immediately before it. `now` is passed in so
  * that every window in a single response is measured from the same instant.
+ *
+ * "month" is the calendar month, because the contract reports
+ * bookings_this_month and a rolling 30 days would not be that. The others are
+ * trailing windows, which is what a range selector actually means. Snapping all
+ * four to calendar month starts would make year and month identical.
  */
 function period(name: RangeName, now: Date, periodsBack = 0) {
-  if (RANGE_MONTHS[name] === 0) {
-    const to = new Date(now.getTime() - periodsBack * 7 * 86_400_000);
-    return { from: new Date(to.getTime() - 7 * 86_400_000), to };
+  if (name === "month") {
+    return {
+      from: new Date(
+        Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - periodsBack, 1),
+      ),
+      // A past month ends where the next one begins, so windows never overlap.
+      to:
+        periodsBack === 0
+          ? now
+          : new Date(
+              Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - periodsBack + 1, 1),
+            ),
+    };
   }
 
-  const months = RANGE_MONTHS[name];
-  const startOf = (back: number) =>
-    new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - months * back, 1));
-
-  return {
-    from: startOf(periodsBack),
-    // A past period ends where the following one begins, so windows never overlap.
-    to: periodsBack === 0 ? now : startOf(periodsBack - 1),
-  };
+  const days = RANGE_DAYS[name];
+  const to = new Date(now.getTime() - periodsBack * days * 86_400_000);
+  return { from: new Date(to.getTime() - days * 86_400_000), to };
 }
 
 /** Percentage change over a window, rounded to one decimal. */
 function deltaPct(current: number, previous: number) {
   if (previous === 0) return current === 0 ? 0 : 100;
   return Math.round(((current - previous) / previous) * 1000) / 10;
+}
+
+interface Window {
+  from: Date;
+  to: Date;
+}
+
+/**
+ * Validates {date_range, compare_with?} and resolves the two windows. Both the
+ * summary and the export go through here so they cannot drift on which range
+ * names are accepted or on where a period boundary falls.
+ */
+function resolveWindows(query: Record<string, unknown>) {
+  const { date_range, compare_with } = query;
+
+  if (date_range !== undefined && !RANGES.includes(date_range as RangeName))
+    return { error: `date_range must be one of: ${RANGES.join(", ")}` };
+
+  if (compare_with !== undefined && !RANGES.includes(compare_with as RangeName))
+    return { error: `compare_with must be one of: ${RANGES.join(", ")}` };
+
+  const range = (date_range as RangeName) ?? "month";
+  const now = new Date();
+
+  return {
+    range,
+    // Omitting compare_with compares against the equivalent window just before it.
+    current: period(range, now),
+    previous: period((compare_with as RangeName) ?? range, now, 1),
+  };
 }
 
 interface BookingRow {
@@ -102,23 +138,10 @@ function countConflicts(bookings: BookingRow[]) {
 // Contract grants this to staff and admins alike; it was previously
 // admin-only, which locked staff out of the dashboard summary.
 router.get("/summary", requireAuth, requireRole("staff", "admin"), async (req, res) => {
-  const { date_range, compare_with } = req.query;
+  const windows = resolveWindows(req.query as Record<string, unknown>);
+  if ("error" in windows) return res.status(400).json({ error: windows.error });
 
-  if (date_range !== undefined && !RANGES.includes(date_range as RangeName))
-    return res
-      .status(400)
-      .json({ error: `date_range must be one of: ${RANGES.join(", ")}` });
-
-  if (compare_with !== undefined && !RANGES.includes(compare_with as RangeName))
-    return res
-      .status(400)
-      .json({ error: `compare_with must be one of: ${RANGES.join(", ")}` });
-
-  const range = (date_range as RangeName) ?? "month";
-  // Omitting compare_with compares against the equivalent window just before it.
-  const now = new Date();
-  const current = period(range, now);
-  const previous = period((compare_with as RangeName) ?? range, now, 1);
+  const { range, current, previous } = windows;
 
   /**
    * The current window is left open at the top: created_at is a database
@@ -128,7 +151,7 @@ router.get("/summary", requireAuth, requireRole("staff", "admin"), async (req, r
    * clocks disagreeing. Past windows stay closed and contiguous, so every row
    * still falls in exactly one period.
    */
-  const bookingsIn = (window: { from: Date; to: Date }, open: boolean) => {
+  const bookingsIn = (window: Window, open: boolean) => {
     const query = supabaseAdmin
       .from("bookings")
       .select("id, status, facility_id, equipment_id, start_at, end_at, created_at")
@@ -138,7 +161,7 @@ router.get("/summary", requireAuth, requireRole("staff", "admin"), async (req, r
 
   // Cancelled donations are withdrawn money and never counted, the same rule
   // apply_donation_to_campaign uses for campaign totals.
-  const donationsIn = (window: { from: Date; to: Date }, open: boolean) => {
+  const donationsIn = (window: Window, open: boolean) => {
     const query = supabaseAdmin
       .from("donations")
       .select("amount, created_at")
@@ -147,7 +170,7 @@ router.get("/summary", requireAuth, requireRole("staff", "admin"), async (req, r
     return open ? query : query.lt("created_at", window.to.toISOString());
   };
 
-  const membersJoinedIn = (window: { from: Date; to: Date }, open: boolean) => {
+  const membersJoinedIn = (window: Window, open: boolean) => {
     const query = supabaseAdmin
       .from("profiles")
       .select("id", { count: "exact", head: true })
@@ -190,7 +213,7 @@ router.get("/summary", requireAuth, requireRole("staff", "admin"), async (req, r
   }));
 
   // Day buckets read as a trend over a month; month buckets keep a year legible.
-  const byMonth = RANGE_MONTHS[range] > 1;
+  const byMonth = RANGE_DAYS[range] > 31;
   const buckets = new Map<string, { total: number; count: number }>();
   for (const donation of donationRows) {
     const key = donation.created_at.slice(0, byMonth ? 7 : 10);
@@ -222,5 +245,123 @@ router.get("/summary", requireAuth, requireRole("staff", "admin"), async (req, r
     generated_at: new Date().toISOString(),
   });
 });
+
+/** PostgREST embeds a many-to-one relation as an object, an array, or null. */
+function embeddedName(value: unknown): string | null {
+  if (Array.isArray(value)) return (value[0] as { name?: string })?.name ?? null;
+  if (value && typeof value === "object")
+    return (value as { name?: string }).name ?? null;
+  return null;
+}
+
+// GET /api/reports/export
+// The contract grants this to admins only and says it takes the same filters as
+// the summary, so it streams the underlying rows for the window rather than the
+// summary's own figures. Bookings and donations share one sheet, told apart by
+// record_type, because a hub manager wants one file to open.
+const EXPORT_COLUMNS = [
+  "record_type",
+  "id",
+  "created_at",
+  "status",
+  "person_id",
+  "resource",
+  "start_at",
+  "end_at",
+  "amount",
+  "type",
+  "receipt_reference",
+  "staff_note",
+];
+
+router.get(
+  "/export",
+  requireAuth,
+  requireRole("admin"),
+  async (req, res) => {
+    const windows = resolveWindows(req.query as Record<string, unknown>);
+    if ("error" in windows) return res.status(400).json({ error: windows.error });
+
+    const { range, current } = windows;
+
+    const [bookings, donations] = await Promise.all([
+      supabaseAdmin
+        .from("bookings")
+        .select(
+          "id, status, member_id, start_at, end_at, staff_note, created_at, facilities(name), equipment(name)",
+        )
+        .gte("created_at", current.from.toISOString())
+        .order("created_at"),
+      supabaseAdmin
+        .from("donations")
+        .select(
+          "id, status, donor_id, amount, type, receipt_reference, staff_note, created_at, anonymous, donor_name, donor_email, donor_phone, campaigns(title)",
+        )
+        .neq("status", "cancelled")
+        .gte("created_at", current.from.toISOString())
+        .order("created_at"),
+    ]);
+
+    if (bookings.error || donations.error)
+      return res.status(500).json({ error: "Unable to export the report" });
+
+    const records: Record<string, unknown>[] = [];
+
+    for (const booking of bookings.data ?? []) {
+      records.push({
+        record_type: "booking",
+        id: booking.id,
+        created_at: booking.created_at,
+        status: booking.status,
+        person_id: booking.member_id,
+        resource: embeddedName(booking.facilities) ?? embeddedName(booking.equipment),
+        start_at: booking.start_at,
+        end_at: booking.end_at,
+        amount: null,
+        type: null,
+        receipt_reference: null,
+        staff_note: booking.staff_note,
+      });
+    }
+
+    for (const donation of donations.data ?? []) {
+      // An anonymous donor is identified by nothing, including the profile id,
+      // which would otherwise point straight back at their record.
+      const anonymous = Boolean(donation.anonymous);
+      records.push({
+        record_type: "donation",
+        id: donation.id,
+        created_at: donation.created_at,
+        status: donation.status,
+        person_id: anonymous ? null : donation.donor_id,
+        resource: embeddedName(donation.campaigns),
+        start_at: null,
+        end_at: null,
+        amount: donation.amount,
+        type: donation.type,
+        receipt_reference: donation.receipt_reference,
+        staff_note: donation.staff_note,
+      });
+    }
+
+    records.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename=report-${range}-${new Date().toISOString().slice(0, 10)}.csv`,
+    );
+    return res
+      .status(200)
+      .send(
+        csvDocument(
+          EXPORT_COLUMNS,
+          records.map((record) =>
+            EXPORT_COLUMNS.map((column) => csvCell(record[column])).join(","),
+          ),
+        ),
+      );
+  },
+);
 
 export default router;
