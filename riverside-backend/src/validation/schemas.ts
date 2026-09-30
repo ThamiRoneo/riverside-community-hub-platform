@@ -16,12 +16,6 @@ export const ReauthenticateSchema = z.object({
   password: z.string().min(8),
 });
 
-export const MemberCreateSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(8),
-  full_name: z.string().min(2),
-});
-
 // Must stay in sync with the public.user_role enum in migration 0001.
 export const MemberUpdateSchema = z.object({
   role: z.enum(["member", "staff", "admin"]),

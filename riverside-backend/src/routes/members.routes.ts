@@ -4,9 +4,12 @@ import { sendRowError } from "../lib/http";
 import { requireAuth } from "../middleware/auth";
 import { requireRole } from "../middleware/roles";
 import { requireReauth } from "../middleware/reauth";
-import { MemberCreateSchema, MemberUpdateSchema } from "../validation/schemas";
+import { MemberUpdateSchema } from "../validation/schemas";
 
 const router = Router();
+
+// Must stay in sync with the public.booking_status enum in migration 0001.
+const BOOKING_STATUSES = ["pending", "approved", "rejected", "cancelled"];
 
 const PROFILE_COLUMNS =
   "id, full_name, phone, role, membership_tier, membership_expires_at, created_at";
@@ -70,13 +73,17 @@ router.get("/", requireAuth, requireRole("staff", "admin"), async (req, res) => 
 });
 
 // GET /api/members/:id
+// GET /api/members/:id
+// Contract: "profile + booking history summary". The summary reuses the reports
+// by_status shape so the codebase has one representation of a status breakdown,
+// and splits upcoming from past by time exactly as GET /api/bookings/mine does.
 router.get("/:id", requireAuth, requireRole("staff", "admin"), async (req, res) => {
   const { data, error } = await supabaseAdmin
     .from("profiles")
     .select(PROFILE_COLUMNS)
     .eq("id", req.params.id)
     .single();
-    
+
   if (error || !data)
     return sendRowError(
       res,
@@ -85,57 +92,34 @@ router.get("/:id", requireAuth, requireRole("staff", "admin"), async (req, res) 
       "Unable to load member",
     );
 
-  return res.status(200).json(data);
-});
+  // One fetch and a filter, rather than a second aggregate round trip: a member
+  // has a handful of bookings, so the arithmetic costs nothing next to a query.
+  const { data: bookings, error: bookingError } = await supabaseAdmin
+    .from("bookings")
+    .select("start_at, status")
+    .eq("member_id", data.id);
 
+  if (bookingError)
+    return res.status(500).json({ error: "Unable to load booking history" });
 
-router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
-  const result = MemberCreateSchema.safeParse(req.body);
-  if (!result.success)
-    return res.status(400).json({ error: "Invalid payload" });
+  const rows = bookings ?? [];
+  const now = new Date().toISOString();
+  const upcoming_count = rows.filter((b) => b.start_at >= now).length;
 
-  const { data, error } = await supabaseAdmin.auth.admin.createUser({
-    email: result.data.email,
-    password: result.data.password,
-    email_confirm: false,
-    user_metadata: { full_name: result.data.full_name },
-  });
-
-  if (error) return res.status(400).json({ error: error.message });
-  if (!data.user)
-    return res.status(500).json({ error: "Unable to create member" });
-
-  // createUser fires the on_auth_user_created trigger, so the profile row
-  // already exists. Upsert fills in the admin-supplied defaults instead of
-  // colliding with that row's primary key.
-  const expiration = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
-  const { error: profileError } = await supabaseAdmin.from("profiles").upsert(
-    {
-      id: data.user.id,
-      full_name: result.data.full_name,
-      membership_expires_at: expiration,
-      role: "member",
-      phone: null,
-      membership_tier: "free",
-    },
-    { onConflict: "id" },
-  );
-
-  // Silently swallowing this would report a member that was never set up.
-  if (profileError) {
-    return res.status(500).json({ error: "Unable to create member profile" });
-  }
-
-  return res.status(201).json({
-    message: "Member created",
-    member: {
-      id: data.user.id,
-      email: data.user.email,
-      full_name: result.data.full_name,
-      role: "member",
+  return res.status(200).json({
+    ...data,
+    booking_history: {
+      total: rows.length,
+      upcoming_count,
+      past_count: rows.length - upcoming_count,
+      by_status: BOOKING_STATUSES.map((status) => ({
+        status,
+        count: rows.filter((b) => b.status === status).length,
+      })),
     },
   });
 });
+
 
 // PATCH /api/members/:id/tier
 router.patch("/:id/tier", requireAuth, requireRole("admin"), async (req, res) => {
@@ -204,36 +188,5 @@ router.patch(
       .json({ message: "Member role updated", member: data });
   },
 );
-
-// PATCH /members/:id/renewal - renew membership (admin only)
-router.patch(
-  "/:id/renewal",
-  requireAuth,
-  requireRole("admin"),
-  async (req, res) => {
-    
-    const expiration = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
-
-    const { data, error } = await supabaseAdmin
-      .from("profiles")
-      .update({ membership_expires_at: expiration })
-      .eq("id", req.params.id)
-      .select("id, full_name, membership_expires_at")
-      .single();
-
-    if (error || !data)
-      return sendRowError(
-        res,
-        error,
-        "Member not found",
-        "Unable to renew membership",
-      );
-
-    return res
-      .status(200)
-      .json({ message: "Membership renewed for 30 days", member: data });
-  },
-);
-
 
 export default router;
