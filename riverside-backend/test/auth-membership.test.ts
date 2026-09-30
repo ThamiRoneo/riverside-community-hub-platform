@@ -635,16 +635,18 @@ describe("GET /api/donations/export", () => {
   });
 });
 
-describe("DELETE /api/campaigns/:id", () => {
-  test("returns 409 when the campaign still has donations", async () => {
+describe("routes the contract does not define", () => {
+  // Deleting a campaign is not a contract capability, and it would destroy the
+  // donation history behind it. Retired the way the /api/admin stubs were.
+  test("DELETE /api/campaigns/:id is gone", async () => {
     const token = await login(ADMIN.email, ADMIN.password);
     const result = await call(
       "/api/campaigns/81111111-1111-4111-8111-111111111111",
       { method: "DELETE", token },
     );
 
-    // Regression: the FK violation surfaced as a generic 500.
-    assert.equal(result.status, 409, JSON.stringify(result.body));
+    assert.equal(result.status, 404, JSON.stringify(result.body));
+    assert.deepEqual(result.body, { error: "Not found" });
   });
 });
 
@@ -2065,5 +2067,190 @@ describe("GET /api/donations filters", () => {
     } finally {
       await probe.cleanup();
     }
+  });
+});
+
+describe("campaign progress and the retired routes", () => {
+  const STAFF = { email: "staff@riverside.example", password: "Password123" };
+
+  test("campaigns carry a whole-percentage progress_pct, or null without a goal", async () => {
+    const marker = `progress-probe-${Date.now()}`;
+    // Every campaign this test creates is listed here, not deleted where it was
+    // made: a failed assertion between the insert and the delete would strand
+    // the row in the live database.
+    const created: string[] = [];
+
+    const goal = required(
+      (
+        await supabaseAdmin
+          .from("campaigns")
+          .insert({
+            title: marker,
+            description: "Progress probe",
+            goal_amount: 200,
+            active: true,
+          })
+          .select("id")
+          .single()
+      ).data,
+      "a campaign with a goal",
+    );
+    created.push(goal.id);
+
+    const noGoal = required(
+      (
+        await supabaseAdmin
+          .from("campaigns")
+          .insert({ title: `${marker}-nogoal`, description: "No goal", active: true })
+          .select("id")
+          .single()
+      ).data,
+      "a campaign with no goal",
+    );
+    created.push(noGoal.id);
+
+    try {
+      // 100 raised against a 200 goal, plus a trigger-driven 300 of donations.
+      await supabaseAdmin.from("donations").insert([
+        { campaign_id: goal.id, amount: 50, type: "one_off", status: "paid", donor_name: marker, receipt_opt_in: false },
+        { campaign_id: goal.id, amount: 50, type: "one_off", status: "paid", donor_name: marker, receipt_opt_in: false },
+      ]);
+
+      const list = await call("/api/campaigns");
+      assert.equal(list.status, 200, JSON.stringify(list.body));
+
+      const listed = list.body.campaigns.find((c: { id: string }) => c.id === goal.id);
+      assert.ok(listed, "the probe campaign must be listed");
+      assert.equal(
+        Number.isInteger(listed.progress_pct),
+        true,
+        "progress must be a whole percentage",
+      );
+      assert.equal(
+        listed.progress_pct,
+        50,
+        `100 of 200 is 50%, got ${listed.progress_pct}`,
+      );
+
+      const noGoalListed = list.body.campaigns.find(
+        (c: { id: string }) => c.id === noGoal.id,
+      );
+      assert.equal(
+        noGoalListed.progress_pct,
+        null,
+        "a campaign with no goal reports null, not 0",
+      );
+
+      // Overfunded is not clamped: 100 raised against a 20 goal is 500%, and a
+      // fundraiser needs to see that rather than have it flattened to 100.
+      const small = required(
+        (
+          await supabaseAdmin
+            .from("campaigns")
+            .insert({ title: `${marker}-small`, description: "Overfunded", goal_amount: 20, active: true })
+            .select("id")
+            .single()
+        ).data,
+        "a campaign with a small goal",
+      );
+      created.push(small.id);
+
+      await supabaseAdmin.from("donations").insert([
+        { campaign_id: small.id, amount: 50, type: "one_off", status: "paid", donor_name: marker, receipt_opt_in: false },
+        { campaign_id: small.id, amount: 50, type: "one_off", status: "paid", donor_name: marker, receipt_opt_in: false },
+      ]);
+
+      const overfunded = await call(`/api/campaigns/${small.id}`);
+      assert.equal(overfunded.status, 200, JSON.stringify(overfunded.body));
+      assert.equal(
+        overfunded.body.progress_pct,
+        500,
+        "progress past the goal must not be clamped to 100",
+      );
+
+    } finally {
+      await supabaseAdmin.from("donations").delete().eq("donor_name", marker);
+      for (const id of created)
+        await supabaseAdmin.from("campaigns").delete().eq("id", id);
+    }
+  });
+
+  test("list and detail agree on progress_pct, and detail 404s on an unknown id", async () => {
+    const campaign = required(
+      (await supabaseAdmin.from("campaigns").select("id").eq("active", true).limit(1).single()).data,
+      "an active campaign",
+    );
+
+    const list = await call("/api/campaigns");
+    const listed = list.body.campaigns.find((c: { id: string }) => c.id === campaign.id);
+    const detail = await call(`/api/campaigns/${campaign.id}`);
+
+    assert.equal(detail.status, 200, JSON.stringify(detail.body));
+    assert.equal(
+      detail.body.progress_pct,
+      listed.progress_pct,
+      "one shaper serves both, so the two must not disagree",
+    );
+
+    // Public: no token sent here.
+    const unknown = await call("/api/campaigns/44444444-4444-4444-8444-444444444444");
+    assert.equal(unknown.status, 404, JSON.stringify(unknown.body));
+  });
+
+  test("the retired member routes are gone", async () => {
+    const adminToken = await login(ADMIN.email, ADMIN.password);
+    const staffToken = await login(STAFF.email, STAFF.password);
+
+    const create = await call("/api/members", {
+      method: "POST",
+      token: adminToken,
+      body: { email: "nobody@riverside.example", password: "Password123", full_name: "Nobody" },
+    });
+    assert.equal(create.status, 404, JSON.stringify(create.body));
+
+    const renewal = await call("/api/members/11111111-1111-4111-8111-111111111111/renewal", {
+      method: "PATCH",
+      token: adminToken,
+    });
+    assert.equal(renewal.status, 404, JSON.stringify(renewal.body));
+  });
+
+  test("GET /api/members/:id summarises booking history", async () => {
+    const staffToken = await login(STAFF.email, STAFF.password);
+    // Aisha owns a seeded pending booking; Nandi owns a rejected one.
+    const result = await call("/api/members/11111111-1111-4111-8111-111111111111", {
+      token: staffToken,
+    });
+
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    assert.ok(result.body.full_name, "the profile fields are still returned");
+
+    const history = result.body.booking_history;
+    assert.ok(history, "the contract requires a booking history summary");
+    assert.equal(typeof history.total, "number");
+    assert.equal(typeof history.upcoming_count, "number");
+    assert.equal(typeof history.past_count, "number");
+
+    assert.equal(
+      history.upcoming_count + history.past_count,
+      history.total,
+      "upcoming and past must partition the total",
+    );
+    assert.equal(
+      history.by_status.reduce((sum: number, b: { count: number }) => sum + b.count, 0),
+      history.total,
+      "the status breakdown must add up to the total",
+    );
+    assert.deepEqual(
+      history.by_status.map((b: { status: string }) => b.status),
+      ["pending", "approved", "rejected", "cancelled"],
+      "all four statuses are reported, zeros included",
+    );
+
+    const memberToken = await login("aisha@riverside.example", "Password123");
+    const denied = await call("/api/members/11111111-1111-4111-8111-111111111111", {
+      token: memberToken,
+    });
+    assert.equal(denied.status, 403, JSON.stringify(denied.body));
   });
 });
