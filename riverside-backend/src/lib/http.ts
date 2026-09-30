@@ -26,3 +26,16 @@ export function sendRowError(
 export function isForeignKeyViolation(error: PostgrestError | null): boolean {
   return error?.code === FOREIGN_KEY_VIOLATION;
 }
+
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Postgres rejects a non-uuid with a 22P02 syntax error, so filtering a `:id`
+ * param on garbage surfaces as a 500. A malformed id is a missing record, so
+ * detail routes check this first and answer 404 rather than blaming the
+ * database.
+ */
+export function isUuid(value: string): boolean {
+  return UUID_PATTERN.test(value);
+}
