@@ -32,9 +32,22 @@ const UUIDS = {
   bk1: "b1111111-1111-4111-8111-111111111111",
   bk2: "b2222222-2222-4222-8222-222222222222",
   bk3: "b3333333-3333-4333-8333-333333333333",
+  notif2: "a2222222-2222-4222-8222-222222222222",
 };
 
 const PASSWORD = "Password123";
+
+/**
+ * Bookings are placed relative to the run date, not hard-coded. Fixed calendar
+ * dates rot: they were already in the past, which left the staff approval queue
+ * empty and the current-month report window with nothing in it.
+ */
+function day(offsetDays, hour) {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() + offsetDays);
+  d.setUTCHours(hour, 0, 0, 0);
+  return d.toISOString();
+}
 
 async function upsert(table, row, match) {
   if (match) {
@@ -76,8 +89,10 @@ async function upsert(table, row, match) {
     if (authErr) throw new Error("auth upsert " + m.email + ": " + authErr.message);
     await upsert("profiles", {
       id: m.id, full_name: m.full_name, phone: m.phone, role: m.role,
+      // Stated explicitly rather than left to the column default, the same way
+      // role is: the auth, profile and members routes all read this column.
+      membership_tier: "free",
       membership_expires_at: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString(),
-      membership_tier: m.membership_tier || null
     }, "id");
   }
   console.log("  profiles done");
@@ -160,9 +175,9 @@ async function upsert(table, row, match) {
 
   console.log("Seeding bookings...");
   const bookings = [
-    { id: UUIDS.bk1, member_id: UUIDS.aisha, facility_id: UUIDS.fac1, equipment_id: null, start_at: "2026-09-18T16:00:00Z", end_at: "2026-09-18T18:00:00Z", status: "pending", staff_note: null },
-    { id: UUIDS.bk2, member_id: UUIDS.david, facility_id: null, equipment_id: UUIDS.eq1, start_at: "2026-09-19T17:00:00Z", end_at: "2026-09-19T19:00:00Z", status: "approved", staff_note: "Approved for gym session" },
-    { id: UUIDS.bk3, member_id: UUIDS.nandi, facility_id: UUIDS.fac2, equipment_id: null, start_at: "2026-09-21T10:00:00Z", end_at: "2026-09-21T16:00:00Z", status: "rejected", staff_note: "Hall booked for another event" },
+    { id: UUIDS.bk1, member_id: UUIDS.aisha, facility_id: UUIDS.fac1, equipment_id: null, start_at: day(7, 16), end_at: day(7, 18), status: "pending", staff_note: null },
+    { id: UUIDS.bk2, member_id: UUIDS.david, facility_id: null, equipment_id: UUIDS.eq1, start_at: day(10, 17), end_at: day(10, 19), status: "approved", staff_note: "Approved for gym session" },
+    { id: UUIDS.bk3, member_id: UUIDS.nandi, facility_id: UUIDS.fac2, equipment_id: null, start_at: day(14, 10), end_at: day(14, 16), status: "rejected", staff_note: "Hall booked for another event" },
   ];
   for (const b of bookings) {
     const { error } = await supabase.from("bookings").upsert(b, { onConflict: "id" });
@@ -170,9 +185,14 @@ async function upsert(table, row, match) {
   }
   console.log("  bookings done");
 
+  // The wording is copied from the messages bookings.routes.ts actually writes
+  // on approve and reject, and each notification belongs to the member who made
+  // the booking it refers to. One unread and one read, so the read flag is
+  // represented in both states.
   console.log("Seeding notifications...");
   const notifications = [
-    { id: UUIDS.notif1, user_id: UUIDS.aisha, booking_id: UUIDS.bk1, message: "Your booking request was rejected.", read: false },
+    { id: UUIDS.notif1, user_id: UUIDS.nandi, booking_id: UUIDS.bk3, message: "Your booking request was rejected.", read: false },
+    { id: UUIDS.notif2, user_id: UUIDS.david, booking_id: UUIDS.bk2, message: "Your booking request was approved.", read: true },
   ];
   for (const n of notifications) {
     const { error } = await supabase.from("notifications").upsert(n, { onConflict: "id" });
