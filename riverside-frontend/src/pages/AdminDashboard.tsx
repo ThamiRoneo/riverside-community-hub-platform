@@ -231,14 +231,30 @@ export default function AdminDashboard() {
           <div
             style={{ background: "#f8fafc", borderRadius: 14, padding: "1rem" }}
           >
-            <p>Total donations</p>
-            <h2>R{(report?.total_donations ?? 0).toLocaleString()}</h2>
+            <p>Donations this period</p>
+            <h2>R{(report?.donations_total ?? 0).toLocaleString()}</h2>
           </div>
           <div
             style={{ background: "#f8fafc", borderRadius: 14, padding: "1rem" }}
           >
             <p>Active members</p>
             <h2>{report?.active_members ?? 0}</h2>
+          </div>
+          <div
+            style={{ background: "#f8fafc", borderRadius: 14, padding: "1rem" }}
+          >
+            <p>Pending requests</p>
+            <h2>{report?.pending_requests ?? 0}</h2>
+          </div>
+          <div
+            style={{
+              background: "#f8fafc",
+              borderRadius: 14,
+              padding: "1rem",
+            }}
+          >
+            <p>Booking conflicts</p>
+            <h2>{report?.conflict_count ?? 0}</h2>
           </div>
         </div>
       </section>
