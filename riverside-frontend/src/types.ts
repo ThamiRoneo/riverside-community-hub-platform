@@ -95,8 +95,15 @@ export interface BookingRecord {
 
 export interface ReportRecord {
   bookings_this_month: number;
-  total_donations: number;
+  bookings_delta_pct: number;
+  donations_total: number;
+  donations_delta_pct: number;
   active_members: number;
+  active_members_delta: number;
+  pending_requests: number;
+  conflict_count: number;
+  bookings_by_status: { status: string; count: number }[];
+  donations_over_time: { date: string; total: number; count: number }[];
   generated_at: string;
 }
 
