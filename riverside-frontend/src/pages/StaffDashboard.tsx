@@ -188,15 +188,40 @@ export default function StaffDashboard() {
         </form>
 
         <h2>Inventory overview</h2>
-        <div style={inventoryStyle}>
-          {resources.map((resource) => (
-            <div key={resource.id} style={itemStyle}>
-              <strong>{resource.name}</strong>
-              <p>{resource.type === "room" ? "Room" : "Equipment"}</p>
-              <p>Capacity: {resource.capacity ?? "Flexible"}</p>
-            </div>
-          ))}
-        </div>
+        {resources.length === 0 ? (
+          <p role="status">
+            No rooms or equipment yet. Add one with the form above.
+          </p>
+        ) : (
+          <>
+            <p style={mutedStyle}>
+              {resources.length} {resources.length === 1 ? "resource" : "resources"}{" "}
+              available to book.
+            </p>
+            <ul style={inventoryStyle} role="list">
+              {resources.map((resource) => (
+                <li key={resource.id} style={inventoryCardStyle}>
+                  <div style={inventoryHeaderStyle}>
+                    <h3 style={{ margin: 0, fontSize: "1rem" }}>
+                      {resource.name}
+                    </h3>
+                    <span style={inventoryBadge}>
+                      {resource.type === "room" ? "Room" : "Equipment"}
+                    </span>
+                  </div>
+                  <p style={inventoryMeta}>
+                    {resource.capacity
+                      ? `Up to ${resource.capacity} people`
+                      : "No capacity limit"}
+                  </p>
+                  {resource.description ? (
+                    <p style={inventoryDescription}>{resource.description}</p>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
       </section>
     </div>
   );
@@ -233,11 +258,56 @@ const formStyle = {
   marginBottom: "1.5rem",
 };
 
+// Inventory cards stack their own content, so they need their own style. The
+// booking row style is display:flex with space-between, which is right when
+// details sit beside buttons but squeezes three stacked fields into a column.
 const inventoryStyle = {
+  listStyle: "none",
+  margin: 0,
+  padding: 0,
   display: "grid",
-  gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+  // The min() keeps the floor from forcing an overflow on a narrow phone.
+  gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 15rem), 1fr))",
   gap: "1rem",
 };
+
+const inventoryCardStyle = {
+  border: "1px solid #e2e8f0",
+  borderRadius: 12,
+  padding: "1rem",
+};
+
+const inventoryHeaderStyle = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "flex-start",
+  gap: "0.75rem",
+};
+
+const inventoryBadge = {
+  background: "#dcfce7",
+  color: "#1f2937",
+  padding: "0.2rem 0.55rem",
+  borderRadius: 999,
+  fontSize: "0.75rem",
+  fontWeight: 700,
+  whiteSpace: "nowrap" as const,
+};
+
+const inventoryMeta = {
+  margin: "0.5rem 0 0",
+  fontSize: "0.875rem",
+  fontWeight: 600,
+  color: "#334155",
+};
+
+const inventoryDescription = {
+  margin: "0.35rem 0 0",
+  fontSize: "0.875rem",
+  color: "#64748b",
+};
+
+const mutedStyle = { color: "#64748b", marginTop: "-0.5rem" };
 
 const approveStyle = {
   background: "#22c55e",
