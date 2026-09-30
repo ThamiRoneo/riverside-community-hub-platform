@@ -27,6 +27,13 @@ export const MemberUpdateSchema = z.object({
   role: z.enum(["member", "staff", "admin"]),
 });
 
+// POST /api/staff/invite: the admin decides the role at invite time, so it is
+// required here rather than defaulted to the trigger's "member".
+export const StaffInviteSchema = z.object({
+  email: z.string().email(),
+  role: z.enum(["staff", "admin"]),
+});
+
 // Wire format uses `contact_phone` per the API contract; the profiles table
 // column is `phone`. The mapping belongs in the route, not the schema.
 export const MemberProfileUpdateSchema = z.object({

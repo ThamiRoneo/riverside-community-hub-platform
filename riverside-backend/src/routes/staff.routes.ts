@@ -4,6 +4,7 @@ import { sendRowError } from "../lib/http";
 import { requireAuth } from "../middleware/auth";
 import { requireReauth } from "../middleware/reauth";
 import { requireRole } from "../middleware/roles";
+import { StaffInviteSchema } from "../validation/schemas";
 
 const router = Router();
 
@@ -92,6 +93,61 @@ router.patch(
       );
 
     return res.status(200).json({ id: data.id, active: data.active });
+  },
+);
+
+// POST /api/staff/invite
+// Contract: admin only, returns {invite_id, status}. Plain signup is left to the
+// auth trigger, which gives everybody "member". An invite is different: the
+// admin already knows the access level they are granting, so the role travels
+// with the invite and is written onto the profile the trigger creates.
+// requireReauth matches PATCH /:id/deactivate; both hand out or remove access.
+router.post(
+  "/invite",
+  requireAuth,
+  requireRole("admin"),
+  requireReauth,
+  async (req, res) => {
+    const result = StaffInviteSchema.safeParse(req.body);
+    if (!result.success)
+      return res.status(400).json({ error: "Invalid payload" });
+
+    const { email, role } = result.data;
+
+    const { data: invite, error: inviteError } =
+      await supabaseAdmin.auth.admin.inviteUserByEmail(email);
+
+    if (inviteError) {
+      // GoTrue reports an address that is already registered as a client error;
+      // that is a conflict rather than an upstream outage.
+      const alreadyRegistered =
+        /already (been )?registered|already exists/i.test(inviteError.message);
+      if (alreadyRegistered)
+        return res
+          .status(409)
+          .json({ error: "That email already has an account" });
+      return res.status(502).json({ error: "Unable to send the invite" });
+    }
+
+    // The trigger has already created the profile as a member by now; overwrite
+    // it with the role the admin chose.
+    const { data: profile, error: roleError } = await supabaseAdmin
+      .from("profiles")
+      .update({ role })
+      .eq("id", invite.user.id)
+      .select("id")
+      .single();
+
+    if (roleError || !profile) {
+      // Deleting the auth user cascades to the profile, so a failed role write
+      // must not leave a half-invited account behind.
+      await supabaseAdmin.auth.admin.deleteUser(invite.user.id);
+      return res.status(500).json({ error: "Unable to assign the invited role" });
+    }
+
+    return res
+      .status(201)
+      .json({ invite_id: invite.user.id, status: "pending" });
   },
 );
 
