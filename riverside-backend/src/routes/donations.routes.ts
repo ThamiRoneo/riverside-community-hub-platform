@@ -1,23 +1,13 @@
 import crypto from "node:crypto";
 import { Router } from "express";
 import { supabaseAdmin } from "../config/supabase";
+import { csvCell, csvDocument } from "../lib/csv";
 import { isForeignKeyViolation, sendRowError } from "../lib/http";
 import { attachUserIfPresent, requireAuth } from "../middleware/auth";
 import { requireRole } from "../middleware/roles";
 import { DonationCreateSchema } from "../validation/schemas";
 
 const router = Router();
-
-/**
- * Neutralises spreadsheet formula injection. Donor-supplied fields reach the
- * CSV and are opened in Excel by staff, so a leading = + - @ or a control
- * character would otherwise be evaluated as a formula.
- */
-function csvCell(value: unknown) {
-  const text = value == null ? "" : String(value);
-  const safe = /^[=+\-@\t\r]/.test(text) ? `'${text}` : text;
-  return `"${safe.replace(/"/g, '""')}"`;
-}
 
 /** An anonymous donation must not expose the donor's identity in an export. */
 function redactAnonymous(donation: Record<string, unknown>) {
@@ -84,7 +74,7 @@ router.get(
 
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     res.setHeader("Content-Disposition", "attachment; filename=donations.csv");
-    return res.status(200).send([columns.join(","), ...rows].join("\n"));
+    return res.status(200).send(csvDocument(columns, rows));
   },
 );
 
