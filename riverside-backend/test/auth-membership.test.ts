@@ -1907,3 +1907,163 @@ describe("bookings: own list and the staff queue", () => {
     assert.equal(reversed.status, 400, JSON.stringify(reversed.body));
   });
 });
+
+describe("GET /api/donations filters", () => {
+  const STAFF = { email: "staff@riverside.example", password: "Password123" };
+
+  test("narrows by status, type, campaign and date, and reports a total", async () => {
+    const marker = `filter-probe-${Date.now()}`;
+    const probe = await createProbeDonation({
+      donor_name: marker,
+      type: "pledge_intent",
+      status: "pending_followup",
+    });
+
+    try {
+      const staffToken = await login(STAFF.email, STAFF.password);
+
+      const all = await call("/api/donations", { token: staffToken });
+      assert.equal(all.status, 200, JSON.stringify(all.body));
+      assert.equal(typeof all.body.total, "number", "the contract requires total");
+      assert.equal(typeof all.body.page, "number");
+      assert.ok(
+        all.body.donations.some((d: { donor_name: string }) => d.donor_name === marker),
+        "an unfiltered list must include the probe",
+      );
+
+      // This is the contract's follow-up queue, which could not work at all
+      // before: the handler ignored every filter it was given.
+      const queue = await call("/api/donations?status=pending_followup", {
+        token: staffToken,
+      });
+      assert.equal(queue.status, 200, JSON.stringify(queue.body));
+      for (const donation of queue.body.donations)
+        assert.equal(donation.status, "pending_followup");
+
+      const typed = await call("/api/donations?type=pledge_intent", {
+        token: staffToken,
+      });
+      for (const donation of typed.body.donations)
+        assert.equal(donation.type, "pledge_intent");
+
+      const byCampaign = await call(
+        `/api/donations?campaign_id=${probe.donation.campaign_id}`,
+        { token: staffToken },
+      );
+      for (const donation of byCampaign.body.donations)
+        assert.equal(donation.campaign_id, probe.donation.campaign_id);
+
+      const byDate = await call(
+        `/api/donations?date_from=${new Date().toISOString()}`,
+        { token: staffToken },
+      );
+      assert.ok(
+        byDate.body.donations.some((d: { donor_name: string }) => d.donor_name === marker),
+        "a probe created now must fall inside today's lower bound",
+      );
+    } finally {
+      await probe.cleanup();
+    }
+  });
+
+  test("date_to covers the whole of a bare date", async () => {
+    const marker = `endofday-probe-${Date.now()}`;
+    const today = new Date().toISOString().slice(0, 10);
+    const probe = await createProbeDonation({ donor_name: marker });
+
+    try {
+      const staffToken = await login(STAFF.email, STAFF.password);
+      // A donation made this afternoon must not be hidden by a midnight bound.
+      const result = await call(
+        `/api/donations?date_from=${today}&date_to=${today}`,
+        { token: staffToken },
+      );
+
+      assert.equal(result.status, 200, JSON.stringify(result.body));
+      assert.ok(
+        result.body.donations.some((d: { donor_name: string }) => d.donor_name === marker),
+        "date_to must be inclusive to the end of the day",
+      );
+    } finally {
+      await probe.cleanup();
+    }
+  });
+
+  test("paginates and reports the total before the page", async () => {
+    const staffToken = await login(STAFF.email, STAFF.password);
+    const first = await call("/api/donations?page=1&page_size=1", {
+      token: staffToken,
+    });
+    const second = await call("/api/donations?page=2&page_size=1", {
+      token: staffToken,
+    });
+
+    assert.equal(first.status, 200);
+    assert.equal(second.status, 200);
+    assert.equal(first.body.donations.length, 1);
+    assert.equal(second.body.donations.length, 1);
+    assert.equal(
+      first.body.total,
+      second.body.total,
+      "total describes the filtered set, not the page",
+    );
+    assert.notEqual(
+      first.body.donations[0].id,
+      second.body.donations[0].id,
+      "the two pages must not overlap",
+    );
+  });
+
+  test("rejects a filter value the column cannot hold", async () => {
+    const staffToken = await login(STAFF.email, STAFF.password);
+
+    for (const query of [
+      "status=made_up",
+      "type=yearly",
+      "campaign_id=not-a-uuid",
+      "date_from=yesterday",
+      "date_from=2030-01-02&date_to=2030-01-01",
+    ]) {
+      const result = await call(`/api/donations?${query}`, { token: staffToken });
+      assert.equal(result.status, 400, `${query} should be rejected`);
+      assert.ok(result.body.error, `${query} must explain itself`);
+    }
+  });
+
+  test("the export takes the same filters and is never paginated", async () => {
+    const marker = `export-filter-probe-${Date.now()}`;
+    const probe = await createProbeDonation({
+      donor_name: marker,
+      status: "followed_up",
+    });
+
+    try {
+      const adminToken = await login(ADMIN.email, ADMIN.password);
+      const csv = await (
+        await fetch(`${baseUrl}/api/donations/export?status=followed_up`, {
+          headers: { Authorization: `Bearer ${adminToken}` },
+        })
+      ).text();
+
+      assert.ok(csv.includes(marker), "a matching donation must be exported");
+
+      const empty = await (
+        await fetch(`${baseUrl}/api/donations/export?status=pending_followup`, {
+          headers: { Authorization: `Bearer ${adminToken}` },
+        })
+      ).text();
+      assert.ok(
+        !empty.includes(marker),
+        "an excluded donation must not reach the export",
+      );
+
+      const rejected = await fetch(
+        `${baseUrl}/api/donations/export?status=made_up`,
+        { headers: { Authorization: `Bearer ${adminToken}` } },
+      );
+      assert.equal(rejected.status, 400);
+    } finally {
+      await probe.cleanup();
+    }
+  });
+});
