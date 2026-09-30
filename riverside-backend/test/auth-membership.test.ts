@@ -884,6 +884,121 @@ describe("campaign.current_amount integrity", () => {
   });
 });
 
+describe("GET /api/reports/summary", () => {
+  const STAFF = { email: "staff@riverside.example", password: "Password123" };
+
+  test("returns every field the contract documents", async () => {
+    const token = await login(STAFF.email, STAFF.password);
+    const result = await call("/api/reports/summary", { token });
+
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    for (const field of [
+      "bookings_this_month",
+      "bookings_delta_pct",
+      "donations_total",
+      "donations_delta_pct",
+      "active_members",
+      "active_members_delta",
+      "pending_requests",
+      "conflict_count",
+    ]) {
+      assert.equal(
+        typeof result.body[field],
+        "number",
+        `${field} must be a number, got ${typeof result.body[field]}`,
+      );
+    }
+    assert.ok(Array.isArray(result.body.bookings_by_status), "bookings_by_status must be a list");
+    assert.ok(Array.isArray(result.body.donations_over_time), "donations_over_time must be a list");
+    assert.deepStrictEqual(
+      result.body.bookings_by_status.map((b: { status: string }) => b.status),
+      ["pending", "approved", "rejected", "cancelled"],
+      "every booking status must be represented, including the empty ones",
+    );
+  });
+
+  test("rejects a date_range it does not recognise", async () => {
+    const token = await login(STAFF.email, STAFF.password);
+
+    const range = await call("/api/reports/summary?date_range=fortnight", { token });
+    assert.equal(range.status, 400, JSON.stringify(range.body));
+
+    const compare = await call("/api/reports/summary?compare_with=fortnight", { token });
+    assert.equal(compare.status, 400, JSON.stringify(compare.body));
+
+    const valid = await call("/api/reports/summary?date_range=week&compare_with=month", { token });
+    assert.equal(valid.status, 200, JSON.stringify(valid.body));
+  });
+
+  test("counts bookings that overlap another live booking on the same resource", async () => {
+    const token = await login(STAFF.email, STAFF.password);
+    const facility = required(
+      (
+        await supabaseAdmin.from("facilities").select("id").eq("active", true).limit(1).single()
+      ).data,
+      "an active facility",
+    );
+
+    const summary = async () => {
+      const result = await call("/api/reports/summary", { token });
+      return required(result.body, "a summary");
+    };
+
+    const before = await summary();
+
+    // A window well clear of the seeded bookings, so the only overlap on this
+    // facility is the pair created here. Pending bookings may overlap: the
+    // database only refuses two overlapping *approved* ones.
+    const start = new Date(Date.now() + 60 * 86_400_000).toISOString();
+    const end = new Date(Date.now() + 60 * 86_400_000 + 7_200_000).toISOString();
+    const later = new Date(Date.now() + 60 * 86_400_000 + 3_600_000).toISOString();
+    const overlapping = await supabaseAdmin
+      .from("bookings")
+      .insert([
+        { member_id: "11111111-1111-4111-8111-111111111111", facility_id: facility.id, equipment_id: null, start_at: start, end_at: end, status: "pending" },
+        { member_id: "22222222-2222-4222-8222-222222222222", facility_id: facility.id, equipment_id: null, start_at: later, end_at: end, status: "pending" },
+      ])
+      .select("id");
+
+    try {
+      assert.equal(overlapping.error, null, overlapping.error?.message);
+      const after = await summary();
+      assert.equal(
+        after.conflict_count,
+        before.conflict_count + 2,
+        "both members of an overlapping pair must be counted as conflicting",
+      );
+    } finally {
+      await supabaseAdmin.from("bookings").delete().in("id", (overlapping.data ?? []).map((b) => b.id));
+    }
+
+    const restored = await summary();
+    assert.equal(
+      restored.conflict_count,
+      before.conflict_count,
+      "removing the pair must leave no conflict behind",
+    );
+  });
+
+  test("leaves cancelled donations out of donations_total", async () => {
+    const token = await login(STAFF.email, STAFF.password);
+    const before = required((await call("/api/reports/summary", { token })).body, "a summary");
+
+    const probe = await createProbeDonation({ amount: 999, status: "cancelled" });
+
+    try {
+      const after = required((await call("/api/reports/summary", { token })).body, "a summary");
+      assert.equal(
+        after.donations_total,
+        before.donations_total,
+        "a cancelled donation is withdrawn money and must not be counted",
+      );
+    } finally {
+      await probe.cleanup();
+    }
+  });
+});
+
 describe("access control: contract role matrix", () => {
   const STAFF = { email: "staff@riverside.example", password: "Password123" };
   const MEMBER = { email: "aisha@riverside.example", password: "Password123" };
