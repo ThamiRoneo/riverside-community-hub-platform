@@ -42,7 +42,10 @@ export default function AdminDashboard() {
       apiGet<{ members: MemberRecord[] }>("/members"),
       apiGet<{ programmes: ProgrammeRecord[] }>("/programmes"),
       apiGet<{ campaigns: CampaignRecord[] }>("/campaigns"),
-      apiGet<{ donations: DonationRecord[] }>("/donations"),
+      // The list endpoint is paginated, and this table renders every donation
+      // it is given, so ask for the server's maximum explicitly. Without it the
+      // default page size would silently truncate the table at ten rows.
+      apiGet<{ donations: DonationRecord[] }>("/donations?page_size=100"),
     ])
       .then(
         ([
