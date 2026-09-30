@@ -115,8 +115,8 @@ async function upsert(table, row, match) {
     { id: UUIDS.fac2, name: "Community Hall", capacity: 50, hourly_rate: 420, description: "Spacious room for events and trainings." },
   ];
   const equipment = [
-    { id: UUIDS.eq1, name: "Gym Equipment Set", quantity: 1, description: "Portable fitness equipment bundle for training sessions." },
-    { id: UUIDS.eq2, name: "Projector Kit", quantity: 1, description: "Projector and screen package for presentations." },
+    { id: UUIDS.eq1, name: "Gym Equipment Set", quantity: 1, capacity: 12, description: "Portable fitness equipment bundle for training sessions." },
+    { id: UUIDS.eq2, name: "Projector Kit", quantity: 1, capacity: 1, description: "Projector and screen package for presentations." },
   ];
   for (const f of facilities) {
     const { error } = await supabase.from("facilities").upsert(f, { onConflict: "id" });
@@ -174,10 +174,12 @@ async function upsert(table, row, match) {
   console.log("  donations done");
 
   console.log("Seeding bookings...");
+  // purpose, people_count and contact_phone are the contract's booking fields,
+  // added in migration 0008. Phones match the members they belong to.
   const bookings = [
-    { id: UUIDS.bk1, member_id: UUIDS.aisha, facility_id: UUIDS.fac1, equipment_id: null, start_at: day(7, 16), end_at: day(7, 18), status: "pending", staff_note: null },
-    { id: UUIDS.bk2, member_id: UUIDS.david, facility_id: null, equipment_id: UUIDS.eq1, start_at: day(10, 17), end_at: day(10, 19), status: "approved", staff_note: "Approved for gym session" },
-    { id: UUIDS.bk3, member_id: UUIDS.nandi, facility_id: UUIDS.fac2, equipment_id: null, start_at: day(14, 10), end_at: day(14, 16), status: "rejected", staff_note: "Hall booked for another event" },
+    { id: UUIDS.bk1, member_id: UUIDS.aisha, facility_id: UUIDS.fac1, equipment_id: null, start_at: day(7, 16), end_at: day(7, 18), status: "pending", staff_note: null, purpose: "Neighbourhood association meeting", accessibility_notes: null, contact_phone: "0721000001", people_count: 10 },
+    { id: UUIDS.bk2, member_id: UUIDS.david, facility_id: null, equipment_id: UUIDS.eq1, start_at: day(10, 17), end_at: day(10, 19), status: "approved", staff_note: "Approved for gym session", purpose: "Youth fitness coaching", accessibility_notes: null, contact_phone: "0721000002", people_count: 6 },
+    { id: UUIDS.bk3, member_id: UUIDS.nandi, facility_id: UUIDS.fac2, equipment_id: null, start_at: day(14, 10), end_at: day(14, 16), status: "rejected", staff_note: "Hall booked for another event", purpose: "Community food drive", accessibility_notes: "Step-free access needed for the loading area", contact_phone: "0721000003", people_count: 25 },
   ];
   for (const b of bookings) {
     const { error } = await supabase.from("bookings").upsert(b, { onConflict: "id" });

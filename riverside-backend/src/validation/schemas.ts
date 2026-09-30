@@ -47,17 +47,23 @@ export const ProfileCompleteSchema = z.object({
   contact_phone: z.string().max(30).nullable().optional(),
 });
 
+// POST /api/bookings. The contract names one `resource_id` and the member-facing
+// fields `purpose`, `people_count` and `contact_phone`. The route resolves the
+// resource to its underlying table before writing.
 export const BookingCreateSchema = z
   .object({
-    facility_id: z.string().uuid().optional(),
-    equipment_id: z.string().uuid().optional(),
-    start_at: z.string().datetime(),
-    end_at: z.string().datetime(),
+    resource_id: z.string().uuid(),
+    start_time: z.string().datetime(),
+    end_time: z.string().datetime(),
+    purpose: z.string().min(2),
+    accessibility_notes: z.string().max(500).optional(),
+    contact_phone: z.string().min(5).max(30),
+    people_count: z.number().int().positive().max(1000),
   })
-  .refine(
-    (value) => Boolean(value.facility_id) !== Boolean(value.equipment_id),
-    { message: "Provide exactly one facility_id or equipment_id" },
-  );
+  .refine((value) => value.end_time > value.start_time, {
+    message: "end_time must be after start_time",
+    path: ["end_time"],
+  });
 
 export const BookingApproveSchema = z.object({
   staff_note: z.string().min(1),
@@ -82,34 +88,19 @@ export const DonationCreateSchema = z.object({
   receipt_opt_in: z.boolean().default(false),
 });
 
-export const FacilityCreateSchema = z.object({
+// POST /api/resources: `type` picks the underlying table, so it is required
+// rather than inferred. Facilities are rooms; equipment keeps its own quantity.
+export const ResourceCreateSchema = z.object({
   name: z.string().min(1),
-  description: z.string().optional(),
+  type: z.enum(["room", "equipment"]),
   capacity: z.number().int().positive().max(1000),
-  hourly_rate: z.number().positive(),
-  active: z.boolean().default(true),
+  description: z.string().optional().default(""),
 });
 
-export const FacilityUpdateSchema = z.object({
-  name: z.string().optional(),
-  description: z.string().optional(),
+export const ResourceUpdateSchema = z.object({
+  name: z.string().min(1).optional(),
   capacity: z.number().int().positive().max(1000).optional(),
-  hourly_rate: z.number().positive().optional(),
-  active: z.boolean().optional(),
-});
-
-export const EquipmentCreateSchema = z.object({
-  name: z.string().min(1),
   description: z.string().optional(),
-  quantity: z.number().int().positive().default(1),
-  active: z.boolean().default(true),
-});
-
-export const EquipmentUpdateSchema = z.object({
-  name: z.string().optional(),
-  description: z.string().optional(),
-  quantity: z.number().int().positive().optional(),
-  active: z.boolean().optional(),
 });
 
 export const CampaignCreateSchema = z.object({
