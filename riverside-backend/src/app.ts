@@ -11,7 +11,6 @@ import equipmentRoutes from "./routes/equipment.routes";
 import campaignsRoutes from "./routes/campaigns.routes";
 import programmesRoutes from "./routes/programmes.routes";
 import reportsRoutes from "./routes/reports.routes";
-import adminRoutes from "./routes/admin.routes";
 import notificationsRoutes from "./routes/notifications.routes";
 import profileRoutes from "./routes/profile.routes";
 
@@ -34,7 +33,6 @@ app.use("/api/equipment", equipmentRoutes);
 app.use("/api/campaigns", campaignsRoutes);
 app.use("/api/programmes", programmesRoutes);
 app.use("/api/reports", reportsRoutes);
-app.use("/api/admin", adminRoutes);
 app.use("/api/notifications", notificationsRoutes);
 
 app.use((_req, res) => res.status(404).json({ error: "Not found" }));
