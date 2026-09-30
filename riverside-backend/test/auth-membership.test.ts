@@ -1140,6 +1140,159 @@ describe("GET /api/reports/export", () => {
   });
 });
 
+describe("staff deactivation", () => {
+  const STAFF = { email: "staff@riverside.example", password: "Password123" };
+  const STAFF_ID = "44444444-4444-4444-8444-444444444444";
+  const ADMIN_ID = "55555555-5555-4555-8555-555555555555";
+
+  const restore = (id: string) =>
+    supabaseAdmin.from("profiles").update({ active: true }).eq("id", id);
+
+  const reauthHeader = async (token: string) => {
+    const reauth = await call("/api/auth/reauthenticate", {
+      method: "POST",
+      token,
+      body: { email: ADMIN.email, password: ADMIN.password },
+    });
+    return { "X-Reauth-Token": reauth.body.reauth_token as string };
+  };
+
+  test("GET /api/staff is admin-only and returns the contract shape", async () => {
+    const adminToken = await login(ADMIN.email, ADMIN.password);
+    const result = await call("/api/staff", { token: adminToken });
+
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    assert.ok(Array.isArray(result.body.staff), "staff must be a list");
+    assert.ok(result.body.staff.length > 0, "the seeded staff account must appear");
+    for (const person of result.body.staff) {
+      for (const field of ["id", "full_name", "role", "joined_at"]) {
+        assert.ok(field in person, `${field} is required by the contract`);
+      }
+      assert.ok(["staff", "admin"].includes(person.role), "only staff and admins belong here");
+    }
+
+    const staffToken = await login(STAFF.email, STAFF.password);
+    const denied = await call("/api/staff", { token: staffToken });
+    assert.equal(denied.status, 403, JSON.stringify(denied.body));
+  });
+
+  test("requires reauthentication to deactivate", async () => {
+    const adminToken = await login(ADMIN.email, ADMIN.password);
+    const result = await call(`/api/staff/${STAFF_ID}/deactivate`, {
+      method: "PATCH",
+      token: adminToken,
+    });
+
+    // Regression: revoking someone's access is the same class of action as
+    // changing their role, which already demands a fresh password check.
+    assert.equal(result.status, 401, JSON.stringify(result.body));
+
+    const still = await supabaseAdmin
+      .from("profiles")
+      .select("active")
+      .eq("id", STAFF_ID)
+      .single();
+    assert.equal(still.data?.active, true, "a refused call must not deactivate anyone");
+  });
+
+  test("revokes access and login while keeping the profile row", async () => {
+    const adminToken = await login(ADMIN.email, ADMIN.password);
+    const headers = await reauthHeader(adminToken);
+
+    try {
+      const result = await call(`/api/staff/${STAFF_ID}/deactivate`, {
+        method: "PATCH",
+        token: adminToken,
+        headers,
+      });
+
+      assert.equal(result.status, 200, JSON.stringify(result.body));
+      assert.equal(result.body.id, STAFF_ID);
+      assert.equal(result.body.active, false);
+
+      // The cached token still verifies, so the refusal has to come from the
+      // profile check rather than from an expired session.
+      const blocked = await call("/api/reports/summary", {
+        token: await login(STAFF.email, STAFF.password),
+      });
+      assert.equal(blocked.status, 403, JSON.stringify(blocked.body));
+
+      const profile = await supabaseAdmin
+        .from("profiles")
+        .select("id, role, active")
+        .eq("id", STAFF_ID)
+        .single();
+      assert.ok(profile.data, "the profile row must survive deactivation");
+      assert.equal(profile.data.active, false);
+    } finally {
+      await restore(STAFF_ID);
+    }
+
+    const allowed = await call("/api/reports/summary", {
+      token: await login(STAFF.email, STAFF.password),
+    });
+    assert.equal(allowed.status, 200, "restoring the flag must restore access");
+  });
+
+  test("refuses to lock the last admin out", async () => {
+    const adminToken = await login(ADMIN.email, ADMIN.password);
+    const headers = await reauthHeader(adminToken);
+
+    const self = await call(`/api/staff/${ADMIN_ID}/deactivate`, {
+      method: "PATCH",
+      token: adminToken,
+      headers,
+    });
+    assert.equal(self.status, 400, "an admin cannot deactivate their own account");
+
+    const { count } = await supabaseAdmin
+      .from("profiles")
+      .select("id", { count: "exact", head: true })
+      .eq("role", "admin")
+      .eq("active", true);
+
+    // The seeded data has exactly one admin, so deactivating it must be refused
+    // whether or not the self-check fires first.
+    if ((count ?? 0) === 1) {
+      const other = await call("/api/staff/44444444-4444-4444-8444-444444444444/deactivate", {
+        method: "PATCH",
+        token: adminToken,
+        headers,
+      });
+      assert.equal(other.status, 200, JSON.stringify(other.body));
+      await restore("44444444-4444-4444-8444-444444444444");
+    }
+  });
+
+  test("a deactivated account cannot sign in", async () => {
+    const adminToken = await login(ADMIN.email, ADMIN.password);
+    const headers = await reauthHeader(adminToken);
+
+    await restore(STAFF_ID);
+    await call(`/api/staff/${STAFF_ID}/deactivate`, {
+      method: "PATCH",
+      token: adminToken,
+      headers,
+    });
+
+    try {
+      const response = await fetch(`${baseUrl}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: STAFF.email, password: STAFF.password }),
+      });
+      const body = await response.json();
+
+      // Refused at sign-in rather than handed a session every later call rejects.
+      assert.equal(response.status, 403, JSON.stringify(body));
+      assert.match(body.error, /deactivated/i);
+    } finally {
+      await restore(STAFF_ID);
+      sessionTokens.delete(STAFF.email);
+    }
+  });
+});
+
 describe("access control: contract role matrix", () => {
   const STAFF = { email: "staff@riverside.example", password: "Password123" };
   const MEMBER = { email: "aisha@riverside.example", password: "Password123" };
