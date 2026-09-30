@@ -1,4 +1,4 @@
-/*  */import assert from "node:assert/strict";
+import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
@@ -1448,6 +1448,58 @@ describe("access control: contract role matrix", () => {
     } finally {
       // Delete by id: the update above renames the programme, so matching on
       // the original title would no longer find it.
+      await supabaseAdmin.from("programmes").delete().eq("id", programmeId);
+    }
+  });
+
+  test("GET /api/programmes/:id reads one programme, including a deactivated one", async () => {
+    // The contract lists a programme detail read that had no route at all.
+    const suffix = Date.now();
+    const { data: programme, error } = await supabaseAdmin
+      .from("programmes")
+      .insert({
+        title: `Detail probe ${suffix}`,
+        description: "Programme detail probe",
+        age_range: "5-12",
+        schedule_info: "Mon 16:00",
+        active: true,
+      })
+      .select("id, title, description, age_range, schedule_info, active")
+      .single();
+
+    assert.ok(!error && programme, JSON.stringify(error));
+    const programmeId = programme!.id;
+
+    try {
+      // Public: the contract puts this alongside the public listing.
+      const detail = await call(`/api/programmes/${programmeId}`);
+      assert.equal(detail.status, 200, JSON.stringify(detail.body));
+      assert.equal(detail.body.id, programmeId);
+      assert.equal(detail.body.title, `Detail probe ${suffix}`);
+      assert.equal(detail.body.schedule_info, "Mon 16:00");
+
+      // Deactivated programmes stay reachable: PATCH uses the same id, so
+      // staff have to be able to look at what they are reactivating. The
+      // listing hides them, which is why this is not a contradiction.
+      await supabaseAdmin
+        .from("programmes")
+        .update({ active: false })
+        .eq("id", programmeId);
+
+      const deactivated = await call(`/api/programmes/${programmeId}`);
+      assert.equal(deactivated.status, 200, JSON.stringify(deactivated.body));
+      assert.equal(deactivated.body.active, false);
+
+      const unknown = await call(
+        "/api/programmes/00000000-0000-4000-8000-000000000000",
+      );
+      assert.equal(unknown.status, 404, JSON.stringify(unknown.body));
+
+      // Postgres answers a non-uuid filter with a 22P02 syntax error, which
+      // would surface as a 500 and blame the database for a bad URL.
+      const malformed = await call("/api/programmes/not-a-uuid");
+      assert.equal(malformed.status, 404, JSON.stringify(malformed.body));
+    } finally {
       await supabaseAdmin.from("programmes").delete().eq("id", programmeId);
     }
   });
