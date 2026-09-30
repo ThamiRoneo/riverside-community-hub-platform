@@ -75,6 +75,8 @@ export interface CampaignRecord {
   description: string | null;
   goal_amount: number | null;
   current_amount: number;
+  /** Whole percentage, or null when the campaign has no goal set. */
+  progress_pct: number | null;
 }
 
 export interface BookingRecord {

@@ -33,12 +33,12 @@ export default function DonatePage() {
   if (!campaign) return <p>No active donation campaign is available.</p>;
   const activeCampaign = campaign;
 
-  const progress = Math.min(
-    campaign.goal_amount
-      ? (campaign.current_amount / campaign.goal_amount) * 100
-      : 0,
-    100,
-  );
+  // The server derives progress_pct so the list, the detail endpoint and this
+  // page cannot disagree. Recomputing it here is what made the bar clamp at 100
+  // and hide an overfunded campaign.
+  const progress = campaign.progress_pct;
+  const hasGoal = campaign.goal_amount !== null && progress !== null;
+  const goalReached = hasGoal && progress >= 100;
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -78,23 +78,44 @@ export default function DonatePage() {
         <div style={{ marginBottom: "1rem" }}>
           <strong>R{campaign.current_amount.toLocaleString()}</strong> raised so
           far
-          <div
-            style={{
-              height: 12,
-              borderRadius: 999,
-              background: "#e5e7eb",
-              overflow: "hidden",
-              marginTop: "0.75rem",
-            }}
-          >
-            <div
-              style={{
-                width: `${progress}%`,
-                height: "100%",
-                background: "#22c55e",
-              }}
-            />
-          </div>
+          {hasGoal ? (
+            <>
+              {/* The visual bar is decorative; the sentence below is what a
+                  screen reader and a colour-blind reader both rely on. */}
+              <div
+                role="progressbar"
+                aria-valuenow={progress}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuetext={`${progress}% of the R${campaign.goal_amount?.toLocaleString()} goal`}
+                aria-label={`Progress toward the R${campaign.goal_amount?.toLocaleString()} goal`}
+                style={{
+                  height: 12,
+                  borderRadius: 999,
+                  background: "#e5e7eb",
+                  overflow: "hidden",
+                  marginTop: "0.75rem",
+                }}
+              >
+                <div
+                  style={{
+                    width: `${Math.min(progress, 100)}%`,
+                    height: "100%",
+                    background: goalReached ? "#16a34a" : "#22c55e",
+                  }}
+                />
+              </div>
+              <p style={{ marginTop: "0.5rem" }}>
+                {goalReached
+                  ? `Goal reached — R${campaign.current_amount.toLocaleString()} raised against a R${campaign.goal_amount?.toLocaleString()} goal.`
+                  : `${progress}% of the R${campaign.goal_amount?.toLocaleString()} goal.`}
+              </p>
+            </>
+          ) : (
+            <p style={{ marginTop: "0.5rem" }}>
+              This campaign has no funding goal set.
+            </p>
+          )}
         </div>
 
         <label

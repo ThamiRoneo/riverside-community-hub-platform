@@ -3,7 +3,6 @@ import {
   apiDownload,
   apiGet,
   apiPatch,
-  apiPost,
   reauthenticate,
 } from "../lib/api";
 import type {
@@ -23,9 +22,9 @@ export default function AdminDashboard() {
   const [donations, setDonations] = useState<DonationRecord[]>([]);
   const [followUpNote, setFollowUpNote] = useState<Record<string, string>>({});
   const [actionMessage, setActionMessage] = useState("");
-  const [newMemberName, setNewMemberName] = useState("");
-  const [newMemberEmail, setNewMemberEmail] = useState("");
-  const [newMemberPassword, setNewMemberPassword] = useState("");
+  const [renewingId, setRenewingId] = useState<string | null>(null);
+  const [renewalTier, setRenewalTier] = useState("");
+  const [renewalDays, setRenewalDays] = useState("90");
   const [pendingRoleChange, setPendingRoleChange] = useState<{
     memberId: string;
     role: Role;
@@ -94,27 +93,6 @@ export default function AdminDashboard() {
     }
   }
 
-  async function createMember(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    try {
-      await apiPost("/members", {
-        full_name: newMemberName,
-        email: newMemberEmail,
-        password: newMemberPassword,
-      });
-      setNewMemberName("");
-      setNewMemberEmail("");
-      setNewMemberPassword("");
-      setActionMessage("Member created successfully.");
-      const response = await apiGet<{ members: MemberRecord[] }>("/members");
-      setMembers(response.members);
-    } catch (error) {
-      setActionMessage(
-        error instanceof Error ? error.message : "Unable to create member",
-      );
-    }
-  }
-
   async function updateMemberRole(id: string, role: Role) {
     const token = await reauthenticate(reauthPassword);
     await apiPatch(`/members/${id}/role`, { role }, { "X-Reauth-Token": token });
@@ -161,23 +139,50 @@ export default function AdminDashboard() {
     }
   }
 
-  async function renewMembership(id: string) {
+  // PATCH /api/members/:id/renewal is off-contract; /tier is the contract's
+  // manual renewal path and takes both values explicitly. The retired route
+  // accepted an empty body, so the expiry the admin saw was one the client had
+  // guessed and the server had never been told about.
+  function startRenewal(member: MemberRecord) {
+    setActionMessage("");
+    setRenewingId(member.id);
+    setRenewalTier(member.membership_tier ?? "free");
+    setRenewalDays("90");
+  }
+
+  function cancelRenewal() {
+    setRenewingId(null);
+    setRenewalTier("");
+  }
+
+  async function renewMembership(
+    event: FormEvent<HTMLFormElement>,
+    id: string,
+  ) {
+    event.preventDefault();
+    const tier = renewalTier.trim();
+    if (!tier) {
+      setActionMessage("A membership tier is required.");
+      return;
+    }
+
+    const expiresAt = new Date(
+      Date.now() + Number(renewalDays) * 86_400_000,
+    ).toISOString();
+
     try {
-      await apiPatch(`/members/${id}/renewal`, {});
-      // Update the member's expiration date in the UI (assuming 30-day renewal)
+      const response = await apiPatch<{ member: MemberRecord }>(
+        `/members/${id}/tier`,
+        { membership_tier: tier, membership_expires_at: expiresAt },
+      );
+      // Reflect what the server stored rather than what we asked for.
       setMembers((current) =>
         current.map((member) =>
-          member.id === id
-            ? {
-                ...member,
-                membership_expires_at: new Date(
-                  Date.now() + 30 * 24 * 60 * 60 * 1000,
-                ).toISOString(),
-              }
-            : member
-        )
+          member.id === id ? { ...member, ...response.member } : member,
+        ),
       );
-      setActionMessage("Membership renewed successfully.");
+      setActionMessage(`Membership renewed to ${tier} for ${renewalDays} days.`);
+      cancelRenewal();
     } catch (error) {
       setActionMessage(
         error instanceof Error ? error.message : "Unable to renew membership",
@@ -185,7 +190,6 @@ export default function AdminDashboard() {
     }
   }
 
-  
   async function exportDonations() {
     try {
       const blob = await apiDownload("/donations/export");
@@ -292,38 +296,10 @@ export default function AdminDashboard() {
           ))}
         </ul>
         <h3>Recent members</h3>
-        <form
-          onSubmit={createMember}
-          style={{
-            display: "grid",
-            gap: "0.5rem",
-            maxWidth: 520,
-            marginBottom: "1rem",
-          }}
-        >
-          <input
-            required
-            placeholder="Full name"
-            value={newMemberName}
-            onChange={(event) => setNewMemberName(event.target.value)}
-          />
-          <input
-            required
-            type="email"
-            placeholder="Email"
-            value={newMemberEmail}
-            onChange={(event) => setNewMemberEmail(event.target.value)}
-          />
-          <input
-            required
-            minLength={8}
-            type="password"
-            placeholder="Temporary password"
-            value={newMemberPassword}
-            onChange={(event) => setNewMemberPassword(event.target.value)}
-          />
-          <button type="submit">Create member</button>
-        </form>
+        <p>
+          Members join by signing up themselves. Staff and admin accounts are
+          created from the Staff page.
+        </p>
         {members.length === 0 ? <p>No members found.</p> : null}
         <ul>
           {members.map((member) => (
@@ -356,7 +332,8 @@ export default function AdminDashboard() {
                 </select>
                 <button
                   type="button"
-                  onClick={() => renewMembership(member.id)}
+                  onClick={() => startRenewal(member)}
+                  aria-expanded={renewingId === member.id}
                   style={{
                     background: "#22c55e",
                     color: "white",
@@ -367,9 +344,50 @@ export default function AdminDashboard() {
                     cursor: "pointer",
                   }}
                 >
-                  Renew 30 days
+                  Renew
+                  {member.full_name}
                 </button>
               </div>
+              {renewingId === member.id ? (
+                <form
+                  onSubmit={(event) => renewMembership(event, member.id)}
+                  style={{
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: "0.5rem",
+                    alignItems: "flex-end",
+                    marginTop: "0.5rem",
+                    width: "100%",
+                  }}
+                >
+                  <label style={{ display: "grid", gap: "0.2rem" }}>
+                    Membership tier
+                    {/* The contract names no tiers, so this is free text rather
+                        than a closed list we would have had to invent. */}
+                    <input
+                      required
+                      value={renewalTier}
+                      onChange={(event) => setRenewalTier(event.target.value)}
+                    />
+                  </label>
+                  <label style={{ display: "grid", gap: "0.2rem" }}>
+                    Term
+                    <select
+                      value={renewalDays}
+                      onChange={(event) => setRenewalDays(event.target.value)}
+                    >
+                      <option value="30">30 days</option>
+                      <option value="90">90 days</option>
+                      <option value="180">180 days</option>
+                      <option value="365">1 year</option>
+                    </select>
+                  </label>
+                  <button type="submit">Save renewal</button>
+                  <button type="button" onClick={cancelRenewal}>
+                    Cancel
+                  </button>
+                </form>
+              ) : null}
               {pendingRoleChange?.memberId === member.id ? (
                 <form
                   onSubmit={confirmRoleChange}
