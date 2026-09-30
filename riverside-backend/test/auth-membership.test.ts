@@ -41,15 +41,17 @@ async function removeProbeBooking(bookingId: string) {
 /**
  * Creates a donation and returns a cleanup that removes it.
  *
- * campaign.current_amount is maintained by an insert-only trigger, so the
- * total has to be restored explicitly when a probe donation is removed.
+ * apply_donation_to_campaign adds the amount on insert and subtracts it on
+ * delete, so removing the probe is enough to restore the campaign total. Writing
+ * the total back from a snapshot instead would stomp on any legitimate change
+ * made while the probe was alive.
  */
 async function createProbeDonation(overrides: Record<string, unknown> = {}) {
   const campaign = required(
     (
       await supabaseAdmin
         .from("campaigns")
-        .select("id, current_amount")
+        .select("id")
         .eq("active", true)
         .limit(1)
         .single()
@@ -79,10 +81,6 @@ async function createProbeDonation(overrides: Record<string, unknown> = {}) {
     donation: data,
     async cleanup() {
       await supabaseAdmin.from("donations").delete().eq("id", data.id);
-      await supabaseAdmin
-        .from("campaigns")
-        .update({ current_amount: campaign.current_amount })
-        .eq("id", campaign.id);
     },
   };
 }
@@ -503,28 +501,23 @@ describe("PATCH /api/donations/:id/follow-up", () => {
   });
 
   test("returns 409 for a donation that is already followed up", async () => {
-    const donation = required(
-      (
-        await supabaseAdmin
-          .from("donations")
-          .select("id")
-          .eq("status", "followed_up")
-          .limit(1)
-          .single()
-      ).data,
-      "at least one followed_up donation",
-    );
+    // Provisioned here rather than read from the seed, so the check does not
+    // depend on a fixture row existing in whatever state the seed last left.
+    const probe = await createProbeDonation({ status: "followed_up" });
 
+    try {
+      const token = await login(ADMIN.email, ADMIN.password);
+      const result = await call(`/api/donations/${probe.donation.id}/follow-up`, {
+        method: "PATCH",
+        token,
+        body: { staff_note: "should not apply" },
+      });
 
-    const token = await login(ADMIN.email, ADMIN.password);
-    const result = await call(`/api/donations/${donation.id}/follow-up`, {
-      method: "PATCH",
-      token,
-      body: { staff_note: "should not apply" },
-    });
-
-    // Regression: the transition ran from any prior state.
-    assert.equal(result.status, 409, JSON.stringify(result.body));
+      // Regression: the transition ran from any prior state.
+      assert.equal(result.status, 409, JSON.stringify(result.body));
+    } finally {
+      await probe.cleanup();
+    }
   });
 
   test("accepts a follow-up with no staff note, per the contract", async () => {
@@ -619,7 +612,7 @@ describe("POST /api/donations", () => {
       (
         await supabaseAdmin
           .from("campaigns")
-          .select("id, current_amount")
+          .select("id")
           .eq("active", true)
           .limit(1)
           .single()
@@ -663,11 +656,8 @@ describe("POST /api/donations", () => {
       assert.equal(stored.status, "paid");
       assert.equal(stored.receipt_reference, result.body.receipt_reference);
     } finally {
+      // The trigger subtracts on delete, so the total needs no manual restore.
       await supabaseAdmin.from("donations").delete().eq("id", result.body.id);
-      await supabaseAdmin
-        .from("campaigns")
-        .update({ current_amount: campaign.current_amount })
-        .eq("id", campaign.id);
     }
   });
 
@@ -676,7 +666,7 @@ describe("POST /api/donations", () => {
       (
         await supabaseAdmin
           .from("campaigns")
-          .select("id, current_amount")
+          .select("id")
           .eq("active", true)
           .limit(1)
           .single()
@@ -702,10 +692,6 @@ describe("POST /api/donations", () => {
       assert.equal(result.body.status, "pending_followup");
     } finally {
       await supabaseAdmin.from("donations").delete().eq("id", result.body.id);
-      await supabaseAdmin
-        .from("campaigns")
-        .update({ current_amount: campaign.current_amount })
-        .eq("id", campaign.id);
     }
   });
 
@@ -810,7 +796,69 @@ describe("campaign.current_amount integrity", () => {
     );
   });
 
-  test("the live total equals the sum of the campaign's donations", async () => {
+  test("a cancelled donation is withdrawn and never counted", async () => {
+    const campaign = required(
+      (
+        await supabaseAdmin
+          .from("campaigns")
+          .select("id, current_amount")
+          .eq("active", true)
+          .limit(1)
+          .single()
+      ).data,
+      "an active campaign",
+    );
+
+    const before = campaign.current_amount;
+    const probe = await createProbeDonation({ amount: 500, status: "paid" });
+
+    const afterPaid = required(
+      (
+        await supabaseAdmin
+          .from("campaigns")
+          .select("current_amount")
+          .eq("id", campaign.id)
+          .single()
+      ).data,
+      "the campaign while the donation counted",
+    );
+
+    assert.equal(
+      Number(afterPaid.current_amount),
+      Number(before) + 500,
+      "a paid donation must raise the total",
+    );
+
+    await supabaseAdmin
+      .from("donations")
+      .update({ status: "cancelled" })
+      .eq("id", probe.donation.id);
+
+    const afterCancel = required(
+      (
+        await supabaseAdmin
+          .from("campaigns")
+          .select("current_amount")
+          .eq("id", campaign.id)
+          .single()
+      ).data,
+      "the campaign after the donation was cancelled",
+    );
+
+    try {
+      // Regression: the trigger added the amount on every insert regardless of
+      // status, so a cancelled donation inflated the public progress bar for good.
+      assert.equal(
+        Number(afterCancel.current_amount),
+        Number(before),
+        "cancelling must take the amount back out",
+      );
+    } finally {
+      await probe.cleanup();
+    }
+  });
+
+  test("the live total equals the sum of the campaign's non-cancelled donations", async () => {
     const { data: campaigns } = await supabaseAdmin
       .from("campaigns")
       .select("id, title, current_amount");
@@ -818,8 +866,9 @@ describe("campaign.current_amount integrity", () => {
     for (const campaign of campaigns ?? []) {
       const { data: donations } = await supabaseAdmin
         .from("donations")
-        .select("amount")
-        .eq("campaign_id", campaign.id);
+        .select("amount, status")
+        .eq("campaign_id", campaign.id)
+        .neq("status", "cancelled");
 
       const expected = (donations ?? []).reduce(
         (total, d) => total + Number(d.amount),
@@ -829,7 +878,7 @@ describe("campaign.current_amount integrity", () => {
       assert.equal(
         Number(campaign.current_amount),
         expected,
-        `${campaign.title} total must equal the sum of its donations`,
+        `${campaign.title} total must equal the sum of its non-cancelled donations`,
       );
     }
   });
