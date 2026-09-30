@@ -26,6 +26,8 @@ const UUIDS = {
   camp1: "81111111-1111-4111-8111-111111111111",
   don1: "91111111-1111-4111-8111-111111111111",
   don2: "92222222-2222-4222-8222-222222222222",
+  don3: "93333333-3333-4333-8333-333333333333",
+  don4: "94444444-4444-4444-8444-444444444444",
   notif1: "a1111111-1111-4111-8111-111111111111",
   bk1: "b1111111-1111-4111-8111-111111111111",
   bk2: "b2222222-2222-4222-8222-222222222222",
@@ -112,17 +114,44 @@ async function upsert(table, row, match) {
   console.log("  facilities/equipment done");
 
   console.log("Seeding campaign...");
+  // current_amount is trigger-maintained (apply_donation_to_campaign). Writing it
+  // here fights the trigger and would zero the total on a re-run.
   const { error: campErr } = await supabase.from("campaigns").upsert({
-    id: UUIDS.camp1, title: "Winter Food Parcels", goal_amount: 50000, current_amount: 0,
+    id: UUIDS.camp1, title: "Winter Food Parcels", goal_amount: 50000,
     description: "Help Riverside support households with winter food parcels and essential groceries.",
   }, { onConflict: "id" });
   if (campErr) throw new Error("campaign: " + campErr.message);
 
-  console.log("Seeding donations (guest, to reach campaign total 28600)...");
+  // Contract section 3: one_off settles as "paid" immediately, pledge_intent is a
+  // promise to give and lands in the staff follow-up queue, and the only valid step
+  // out of the queue is pending_followup -> followed_up. These four rows cover both
+  // types and all four contract statuses, and never pair one_off with
+  // pending_followup, which the API cannot produce.
+  const YEAR = new Date().getUTCFullYear();
   const donations = [
-    { id: UUIDS.don1, campaign_id: UUIDS.camp1, donor_id: null, type: "one_off", status: "pending_followup", amount: 20000, donor_name: "Community supporter", donor_email: "supporter@riverside.example", donor_phone: null, anonymous: false, receipt_opt_in: true, staff_note: null },
-    { id: UUIDS.don2, campaign_id: UUIDS.camp1, donor_id: null, type: "one_off", status: "followed_up", amount: 8600, donor_name: "Anonymous donor", donor_email: null, donor_phone: null, anonymous: true, receipt_opt_in: false, staff_note: "Follow-up completed" },
+    { id: UUIDS.don1, campaign_id: UUIDS.camp1, donor_id: null, type: "one_off", status: "paid", amount: 20000, donor_name: "Community supporter", donor_email: "supporter@riverside.example", donor_phone: null, anonymous: false, receipt_opt_in: true, staff_note: null, receipt_reference: `RCH-${YEAR}-A1B2C3D4` },
+    { id: UUIDS.don2, campaign_id: UUIDS.camp1, donor_id: null, type: "pledge_intent", status: "pending_followup", amount: 5850, donor_name: "Thandi K.", donor_email: "thandi@riverside.example", donor_phone: "+27 11 000 0016", anonymous: false, receipt_opt_in: true, staff_note: null, receipt_reference: `RCH-${YEAR}-B2C3D4E5` },
+    { id: UUIDS.don3, campaign_id: UUIDS.camp1, donor_id: null, type: "pledge_intent", status: "followed_up", amount: 8600, donor_name: "Anonymous donor", donor_email: null, donor_phone: null, anonymous: true, receipt_opt_in: false, staff_note: "Follow-up completed", receipt_reference: `RCH-${YEAR}-C3D4E5F6` },
+    { id: UUIDS.don4, campaign_id: UUIDS.camp1, donor_id: null, type: "pledge_intent", status: "cancelled", amount: 1500, donor_name: "Withdrawn supporter", donor_email: "withdrawn@riverside.example", donor_phone: null, anonymous: false, receipt_opt_in: false, staff_note: "Donor withdrew the pledge", receipt_reference: `RCH-${YEAR}-D4E5F6A7` },
   ];
+  // campaigns.current_amount is the trigger's sum, and a cancelled donation is
+  // withdrawn money that the trigger never counts, so don4 is excluded here too.
+  const donationTotal = donations
+    .filter((d) => d.status !== "cancelled")
+    .reduce((sum, d) => sum + d.amount, 0);
+
+  // Remove this seed's own rows before re-inserting. The DELETE branch of
+  // apply_donation_to_campaign subtracts whatever is still counting, so a re-run
+  // recomputes the total from scratch instead of leaving the campaign at whatever
+  // it already held. Scoped to these ids; donations from outside this seed are
+  // untouched.
+  const { error: delErr } = await supabase
+    .from("donations")
+    .delete()
+    .in("id", donations.map((d) => d.id));
+  if (delErr) throw new Error("donation cleanup failed: " + delErr.message);
+
+  console.log(`Seeding donations (guest, campaign total ${donationTotal})...`);
   for (const d of donations) {
     const { error } = await supabase.from("donations").upsert(d, { onConflict: "id" });
     if (error) throw new Error("donation " + d.id + ": " + error.message);
