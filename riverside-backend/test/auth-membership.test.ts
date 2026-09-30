@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+/*  */import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
@@ -85,15 +85,37 @@ async function createProbeDonation(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/**
+ * Tokens are cached per account for the length of a run.
+ *
+ * The suite signs in around forty times, which is enough to trip Supabase's
+ * sign-in rate limit and turn unrelated tests red with a spurious 401. Role is
+ * read from the database on every request rather than from the token, so a
+ * cached token still reflects a role change made by an earlier test.
+ */
+const sessionTokens = new Map<string, Promise<string>>();
+
 async function login(email: string, password: string) {
-  const response = await fetch(`${baseUrl}/api/auth/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password }),
-  });
-  assert.equal(response.status, 200, "login should succeed");
-  const body = await response.json();
-  return body.session.access_token as string;
+  const cached = sessionTokens.get(email);
+  if (cached) return cached;
+
+  const attempt = (async () => {
+    const response = await fetch(`${baseUrl}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password }),
+    });
+    assert.equal(
+      response.status,
+      200,
+      `login should succeed for ${email}, got ${response.status}`,
+    );
+    const body = await response.json();
+    return body.session.access_token as string;
+  })();
+
+  sessionTokens.set(email, attempt);
+  return attempt;
 }
 
 async function call(
@@ -995,6 +1017,125 @@ describe("GET /api/reports/summary", () => {
       );
     } finally {
       await probe.cleanup();
+    }
+  });
+});
+
+describe("GET /api/reports/export", () => {
+  const ADMIN = { email: "admin@riverside.example", password: "Password123" };
+  const STAFF = { email: "staff@riverside.example", password: "Password123" };
+
+  const download = async (token: string, query = "") => {
+    const response = await fetch(`${baseUrl}/api/reports/export${query}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    return { status: response.status, text: () => response.text(), response };
+  };
+
+  test("is admin-only; staff are refused", async () => {
+    const staffToken = await login(STAFF.email, STAFF.password);
+    const result = await call("/api/reports/export", { token: staffToken });
+
+    // Regression: the summary is open to staff, but the CSV is admin-only.
+    assert.equal(result.status, 403, JSON.stringify(result.body));
+  });
+
+  test("streams a CSV of the window's rows, not the summary figures", async () => {
+    const token = await login(ADMIN.email, ADMIN.password);
+    const { status, text, response } = await download(token);
+
+    assert.equal(status, 200);
+    assert.match(response.headers.get("content-type") ?? "", /text\/csv/);
+    assert.match(
+      response.headers.get("content-disposition") ?? "",
+      /attachment; filename=report-month-/,
+    );
+
+    const csv = await text();
+    const [header, ...rows] = csv.split("\n");
+    assert.equal(
+      header,
+      "record_type,id,created_at,status,person_id,resource,start_at,end_at,amount,type,receipt_reference,staff_note",
+    );
+    assert.ok(rows.length > 0, "the seeded window must produce rows");
+    assert.ok(
+      rows.some((row) => row.startsWith('"booking",')),
+      "bookings must appear in the export",
+    );
+    assert.ok(
+      rows.some((row) => row.startsWith('"donation",')),
+      "donations must appear in the export",
+    );
+    // Chronological, so the file reads as an activity report.
+    const created = rows.map((row) => /"([^"]*)"/.exec(row.split(",").slice(2).join(","))?.[1] ?? "");
+    assert.ok(created.every(Boolean), "every row must carry a created_at");
+    assert.deepStrictEqual(created, [...created].sort(), "rows must be in date order");
+  });
+
+  test("excludes cancelled donations and anonymises anonymous donors", async () => {
+    const token = await login(ADMIN.email, ADMIN.password);
+    const probe = await createProbeDonation({
+      amount: 4321,
+      status: "cancelled",
+      donor_name: "Cancelled probe",
+    });
+    const anonymous = await createProbeDonation({
+      amount: 21,
+      status: "paid",
+      anonymous: true,
+      donor_name: "anon-probe-export",
+      donor_email: "anon-probe-export@riverside.example",
+    });
+
+    try {
+    const csv = await (await download(token)).text();
+
+    assert.ok(!csv.includes("Cancelled probe"), "a cancelled donation must be excluded");
+    assert.ok(
+      !csv.includes("anon-probe-export"),
+      "an anonymous donor's contact details must not be exported",
+    );
+    assert.ok(
+      csv.includes(anonymous.donation.id),
+      "a paid donation is still exported",
+    );
+    // The same row must not carry the donor's profile id, which would point
+    // straight back at their profile.
+    const anonymousRow = csv.split("\n").find((line) => line.includes(anonymous.donation.id));
+    assert.ok(anonymousRow, "the anonymous donation row must be present");
+    const personColumn = anonymousRow.split(",")[4].replace(/"/g, "");
+    assert.equal(personColumn, "", "an anonymous donor's profile id must be blank");
+    } finally {
+      await probe.cleanup();
+      await anonymous.cleanup();
+    }
+  });
+
+  test("honours the date_range filter", async () => {
+    const token = await login(ADMIN.email, ADMIN.password);
+
+    const bad = await call("/api/reports/export?date_range=fortnight", { token });
+    assert.equal(bad.status, 400, JSON.stringify(bad.body));
+
+    // Seeded rows all fall inside the last week, so a week and a year would look
+    // identical. This probe is stamped two months back, which only the wider
+    // ranges may include.
+    const old = await createProbeDonation({
+      amount: 777,
+      status: "paid",
+      created_at: new Date(Date.now() - 60 * 86_400_000).toISOString(),
+    });
+
+    try {
+      const week = await (await download(token, "?date_range=week")).text();
+      const month = await (await download(token, "?date_range=month")).text();
+      const year = await (await download(token, "?date_range=year")).text();
+
+      assert.ok(!week.includes(old.donation.id), "a two-month-old row is outside a week");
+      assert.ok(!month.includes(old.donation.id), "a two-month-old row is outside this month");
+      assert.ok(year.includes(old.donation.id), "a two-month-old row is inside a year");
+    } finally {
+      await old.cleanup();
     }
   });
 });
