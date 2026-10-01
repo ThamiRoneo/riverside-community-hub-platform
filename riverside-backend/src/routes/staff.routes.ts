@@ -2,6 +2,7 @@ import { Router } from "express";
 import { supabaseAdmin } from "../config/supabase";
 import { sendRowError } from "../lib/http";
 import { requireAuth } from "../middleware/auth";
+import { requireUuidParam } from "../middleware/params";
 import { requireReauth } from "../middleware/reauth";
 import { requireRole } from "../middleware/roles";
 import { StaffInviteSchema } from "../validation/schemas";
@@ -43,6 +44,7 @@ router.patch(
   requireAuth,
   requireRole("admin"),
   requireReauth,
+  requireUuidParam,
   async (req, res) => {
     // An admin who deactivates themselves loses the session they are using.
     if (req.params.id === req.user!.id)

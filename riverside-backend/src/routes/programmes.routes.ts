@@ -1,8 +1,9 @@
 import { Router } from "express";
 import { supabaseAdmin } from "../config/supabase";
-import { isUuid, sendRowError } from "../lib/http";
+import { sendRowError } from "../lib/http";
 import { requireAuth } from "../middleware/auth";
 import { requireRole } from "../middleware/roles";
+import { requireUuidParam } from "../middleware/params";
 import {
   ProgrammeCreateSchema,
   ProgrammeUpdateSchema,
@@ -29,10 +30,7 @@ router.get("/", async (_req, res) => {
 // Contract: public programme detail. Like the campaign detail this also reaches
 // a deactivated programme, because PATCH uses the same id and staff have to be
 // able to look at what they are reactivating.
-router.get("/:id", async (req, res) => {
-  if (!isUuid(req.params.id))
-    return res.status(404).json({ error: "Programme not found" });
-
+router.get("/:id", requireUuidParam, async (req, res) => {
   const { data, error } = await supabaseAdmin
     .from("programmes")
     .select(PROGRAMME_COLUMNS)
@@ -73,6 +71,7 @@ router.patch(
   "/:id",
   requireAuth,
   requireRole("staff", "admin"),
+  requireUuidParam,
   async (req, res) => {
     const result = ProgrammeUpdateSchema.safeParse(req.body);
     if (!result.success)
@@ -96,7 +95,7 @@ router.patch(
   },
 );
 
-router.delete("/:id", requireAuth, requireRole("admin"), async (req, res) => {
+router.delete("/:id", requireAuth, requireRole("admin"), requireUuidParam, async (req, res) => {
   const { error } = await supabaseAdmin
     .from("programmes")
     .delete()

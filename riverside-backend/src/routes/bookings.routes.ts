@@ -7,6 +7,7 @@ import { pagination } from "../lib/pagination";
 import { resolveResource } from "../lib/resources";
 import { requireAuth } from "../middleware/auth";
 import { requireRole } from "../middleware/roles";
+import { requireUuidParam } from "../middleware/params";
 import {
   BookingApproveSchema,
   BookingCreateSchema,
@@ -200,7 +201,7 @@ router.get("/queue", requireAuth, requireRole("staff", "admin"), async (req, res
 
 // GET /api/bookings/:id
 // A member may only read their own; staff and admins may read any.
-router.get("/:id", requireAuth, async (req, res) => {
+router.get("/:id", requireAuth, requireUuidParam, async (req, res) => {
   const { data, error } = await supabaseAdmin
     .from("bookings")
     .select(BOOKING_COLUMNS)
@@ -267,6 +268,7 @@ router.patch(
   "/:id/approve",
   requireAuth,
   requireRole("staff", "admin"),
+  requireUuidParam,
   async (req, res) => {
     const result = BookingApproveSchema.safeParse(req.body);
     if (!result.success)
@@ -317,6 +319,7 @@ router.patch(
   "/:id/reject",
   requireAuth,
   requireRole("staff", "admin"),
+  requireUuidParam,
   async (req, res) => {
     const result = BookingRejectSchema.safeParse(req.body);
     if (!result.success)
@@ -348,7 +351,7 @@ router.patch(
 // Member's own booking, and only while it is still pending or approved.
 // The previous implementation issued the UPDATE and trusted a null error,
 // which reported success even when zero rows matched.
-router.patch("/:id/cancel", requireAuth, async (req, res) => {
+router.patch("/:id/cancel", requireAuth, requireUuidParam, async (req, res) => {
   const { data: booking, error: lookupError } = await supabaseAdmin
     .from("bookings")
     .select("id, member_id, status")

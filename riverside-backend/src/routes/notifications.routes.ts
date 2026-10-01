@@ -2,6 +2,7 @@ import { Router } from "express";
 import { supabaseAdmin } from "../config/supabase";
 import { sendRowError } from "../lib/http";
 import { requireAuth } from "../middleware/auth";
+import { requireUuidParam } from "../middleware/params";
 
 const router = Router();
 
@@ -45,7 +46,7 @@ router.get("/", requireAuth, async (req, res) => {
   });
 });
 
-router.patch("/:id/read", requireAuth, async (req, res) => {
+router.patch("/:id/read", requireAuth, requireUuidParam, async (req, res) => {
   const { data, error } = await supabaseAdmin
     .from("notifications")
     .update({ read: true })

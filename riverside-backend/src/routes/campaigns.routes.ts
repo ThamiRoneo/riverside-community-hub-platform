@@ -3,6 +3,7 @@ import { supabaseAdmin } from "../config/supabase";
 import { sendRowError } from "../lib/http";
 import { requireAuth } from "../middleware/auth";
 import { requireRole } from "../middleware/roles";
+import { requireUuidParam } from "../middleware/params";
 import {
   CampaignCreateSchema,
   CampaignUpdateSchema,
@@ -53,7 +54,7 @@ router.get("/", async (_req, res) => {
 // Contract: public single-campaign detail. Unlike the listing this also reaches
 // a deactivated campaign, because PATCH uses the same id and an admin has to be
 // able to look at what they are reactivating.
-router.get("/:id", async (req, res) => {
+router.get("/:id", requireUuidParam, async (req, res) => {
   const { data, error } = await supabaseAdmin
     .from("campaigns")
     .select(CAMPAIGN_COLUMNS)
@@ -83,7 +84,7 @@ router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
     .json({ message: "Campaign created", campaign: withProgress(data) });
 });
 
-router.patch("/:id", requireAuth, requireRole("admin"), async (req, res) => {
+router.patch("/:id", requireAuth, requireRole("admin"), requireUuidParam, async (req, res) => {
   const result = CampaignUpdateSchema.safeParse(req.body);
   if (!result.success)
     return res.status(400).json({ error: "Invalid payload" });

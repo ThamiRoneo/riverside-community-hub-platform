@@ -13,6 +13,7 @@ import {
 } from "../lib/resources";
 import { requireAuth } from "../middleware/auth";
 import { requireRole } from "../middleware/roles";
+import { requireUuidParam } from "../middleware/params";
 import {
   ResourceCreateSchema,
   ResourceUpdateSchema,
@@ -86,7 +87,7 @@ router.get("/", async (req, res) => {
 // GET /api/resources/:id
 // A deactivated resource is deleted as far as the public catalogue is
 // concerned, so it disappears from here as well as from the listing.
-router.get("/:id", async (req, res) => {
+router.get("/:id", requireUuidParam, async (req, res) => {
   const resolved = await resolveResource(req.params.id);
   if (!resolved || !resolved.resource.active)
     return res.status(404).json({ error: "Resource not found" });
@@ -97,7 +98,7 @@ router.get("/:id", async (req, res) => {
 // Contract: `{slots: [{start_time, end_time, status}]}`. A slot is unavailable
 // when an approved booking overlaps any part of it, so a 09:00-10:30 booking
 // blocks the 09:00 and 10:00 slots but leaves the 11:00 one open.
-router.get("/:id/availability", async (req, res) => {
+router.get("/:id/availability", requireUuidParam, async (req, res) => {
   const date = String(req.query.date ?? "");
   const bounds = dayBounds(date);
   if (!bounds) return res.status(400).json({ error: "date must be YYYY-MM-DD" });
@@ -167,6 +168,7 @@ router.patch(
   "/:id",
   requireAuth,
   requireRole("staff", "admin"),
+  requireUuidParam,
   async (req, res) => {
     const result = ResourceUpdateSchema.safeParse(req.body);
     if (!result.success)
@@ -203,6 +205,7 @@ router.delete(
   "/:id",
   requireAuth,
   requireRole("admin"),
+  requireUuidParam,
   async (req, res) => {
     const resolved = await resolveResource(req.params.id);
     if (!resolved) return res.status(404).json({ error: "Resource not found" });

@@ -3,6 +3,7 @@ import { supabaseAdmin } from "../config/supabase";
 import { sendRowError } from "../lib/http";
 import { requireAuth } from "../middleware/auth";
 import { requireRole } from "../middleware/roles";
+import { requireUuidParam } from "../middleware/params";
 import { requireReauth } from "../middleware/reauth";
 import { MemberUpdateSchema } from "../validation/schemas";
 
@@ -77,7 +78,7 @@ router.get("/", requireAuth, requireRole("staff", "admin"), async (req, res) => 
 // Contract: "profile + booking history summary". The summary reuses the reports
 // by_status shape so the codebase has one representation of a status breakdown,
 // and splits upcoming from past by time exactly as GET /api/bookings/mine does.
-router.get("/:id", requireAuth, requireRole("staff", "admin"), async (req, res) => {
+router.get("/:id", requireAuth, requireRole("staff", "admin"), requireUuidParam, async (req, res) => {
   const { data, error } = await supabaseAdmin
     .from("profiles")
     .select(PROFILE_COLUMNS)
@@ -122,7 +123,7 @@ router.get("/:id", requireAuth, requireRole("staff", "admin"), async (req, res) 
 
 
 // PATCH /api/members/:id/tier
-router.patch("/:id/tier", requireAuth, requireRole("admin"), async (req, res) => {
+router.patch("/:id/tier", requireAuth, requireRole("admin"), requireUuidParam, async (req, res) => {
   
   const { membership_tier, membership_expires_at } = req.body;
   
@@ -155,6 +156,7 @@ router.patch(
   requireAuth,
   requireRole("admin"),
   requireReauth,
+  requireUuidParam,
   async (req, res) => {
     const result = MemberUpdateSchema.safeParse(req.body);
     if (!result.success)

@@ -5,6 +5,7 @@ import { csvCell, csvDocument } from "../lib/csv";
 import { pagination } from "../lib/pagination";
 import { isForeignKeyViolation, sendRowError } from "../lib/http";
 import { attachUserIfPresent, requireAuth } from "../middleware/auth";
+import { requireUuidParam } from "../middleware/params";
 import { requireRole } from "../middleware/roles";
 import { DonationCreateSchema } from "../validation/schemas";
 
@@ -238,6 +239,7 @@ router.patch(
   "/:id/follow-up",
   requireAuth,
   requireRole("staff", "admin"),
+  requireUuidParam,
   async (req, res) => {
     const { staff_note } = req.body as { staff_note?: string };
 
