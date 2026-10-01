@@ -167,3 +167,17 @@ export interface NotificationRecord {
   read: boolean;
   created_at: string;
 }
+
+// GET /api/staff is admin-only and returns {staff: [...]}. `active` is carried
+// alongside the contract's four fields so an admin who has just deactivated
+// somebody can see that in the list; an extra field leaves the documented
+// shape valid.
+export type StaffRole = Extract<Role, "staff" | "admin">;
+
+export interface StaffRecord {
+  id: string;
+  full_name: string;
+  role: StaffRole;
+  joined_at: string;
+  active: boolean;
+}

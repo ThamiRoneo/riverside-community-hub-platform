@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
+import StaffManagement from "../components/StaffManagement";
 import {
   apiDownload,
   apiGet,
@@ -279,7 +280,6 @@ export default function AdminDashboard() {
           <li>Manage programmes</li>
           <li>Review campaigns</li>
           <li>Generate reports</li>
-          <li>Manage staff accounts</li>
         </ul>
         <h3>Current programmes</h3>
         {programmes.length === 0 ? <p>No active programmes.</p> : null}
@@ -412,6 +412,8 @@ export default function AdminDashboard() {
             </li>
           ))}
         </ul>
+
+        <StaffManagement />
 
         <h3>Donation follow-up</h3>
         <button type="button" onClick={exportDonations}>
