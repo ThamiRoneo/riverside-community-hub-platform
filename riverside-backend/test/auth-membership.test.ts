@@ -1046,6 +1046,7 @@ describe("GET /api/reports/summary", () => {
 describe("GET /api/reports/export", () => {
   const ADMIN = { email: "admin@riverside.example", password: "Password123" };
   const STAFF = { email: "staff@riverside.example", password: "Password123" };
+  const MEMBER = { email: "aisha@riverside.example", password: "Password123" };
 
   const download = async (token: string, query = "") => {
     const response = await fetch(`${baseUrl}/api/reports/export${query}`, {
@@ -1064,34 +1065,65 @@ describe("GET /api/reports/export", () => {
 
   test("streams a CSV of the window's rows, not the summary figures", async () => {
     const token = await login(ADMIN.email, ADMIN.password);
-    const { status, text, response } = await download(token);
 
-    assert.equal(status, 200);
-    assert.match(response.headers.get("content-type") ?? "", /text\/csv/);
-    assert.match(
-      response.headers.get("content-disposition") ?? "",
-      /attachment; filename=report-month-/,
+    // Seed a booking and a donation inside the window the export defaults to.
+    // This test used to lean on whatever rows the database happened to hold,
+    // which emptied the export silently the moment the calendar rolled into a
+    // new month and the old fixtures fell out of the range.
+    const facility = required(
+      (
+        await supabaseAdmin
+          .from("facilities")
+          .select("id")
+          .eq("active", true)
+          .limit(1)
+          .single()
+      ).data,
+      "an active facility",
     );
+    const start = new Date(Date.now() + 150 * 86_400_000).toISOString();
+    const end = new Date(Date.now() + 151 * 86_400_000).toISOString();
+    const booking = await call("/api/bookings", {
+      method: "POST",
+      token: await login(MEMBER.email, MEMBER.password),
+      body: bookingRequest(facility.id, start, end),
+    });
+    assert.equal(booking.status, 201, JSON.stringify(booking.body));
+    const donation = await createProbeDonation({ amount: 4242 });
 
-    const csv = await text();
-    const [header, ...rows] = csv.split("\n");
-    assert.equal(
-      header,
-      "record_type,id,created_at,status,person_id,resource,start_at,end_at,amount,type,receipt_reference,staff_note",
-    );
-    assert.ok(rows.length > 0, "the seeded window must produce rows");
-    assert.ok(
-      rows.some((row) => row.startsWith('"booking",')),
-      "bookings must appear in the export",
-    );
-    assert.ok(
-      rows.some((row) => row.startsWith('"donation",')),
-      "donations must appear in the export",
-    );
-    // Chronological, so the file reads as an activity report.
-    const created = rows.map((row) => /"([^"]*)"/.exec(row.split(",").slice(2).join(","))?.[1] ?? "");
-    assert.ok(created.every(Boolean), "every row must carry a created_at");
-    assert.deepStrictEqual(created, [...created].sort(), "rows must be in date order");
+    try {
+      const { status, text, response } = await download(token);
+
+      assert.equal(status, 200);
+      assert.match(response.headers.get("content-type") ?? "", /text\/csv/);
+      assert.match(
+        response.headers.get("content-disposition") ?? "",
+        /attachment; filename=report-month-/,
+      );
+
+      const csv = await text();
+      const [header, ...rows] = csv.split("\n");
+      assert.equal(
+        header,
+        "record_type,id,created_at,status,person_id,resource,start_at,end_at,amount,type,receipt_reference,staff_note",
+      );
+      assert.ok(rows.length > 0, "the seeded window must produce rows");
+      assert.ok(
+        rows.some((row) => row.startsWith('"booking",')),
+        "bookings must appear in the export",
+      );
+      assert.ok(
+        rows.some((row) => row.startsWith('"donation",')),
+        "donations must appear in the export",
+      );
+      // Chronological, so the file reads as an activity report.
+      const created = rows.map((row) => /"([^"]*)"/.exec(row.split(",").slice(2).join(","))?.[1] ?? "");
+      assert.ok(created.every(Boolean), "every row must carry a created_at");
+      assert.deepStrictEqual(created, [...created].sort(), "rows must be in date order");
+    } finally {
+      await removeProbeBooking(booking.body.id);
+      await donation.cleanup();
+    }
   });
 
   test("excludes cancelled donations and anonymises anonymous donors", async () => {
@@ -1450,6 +1482,79 @@ describe("access control: contract role matrix", () => {
       // the original title would no longer find it.
       await supabaseAdmin.from("programmes").delete().eq("id", programmeId);
     }
+  });
+
+  test("every :id route answers 404 for a malformed id, not 500", async () => {
+    // Postgres rejects a non-uuid equality filter with a 22P02 syntax error.
+    // Any route that filtered on a raw :id therefore turned a bad URL into a
+    // 500 and blamed the database. This walks the whole :id surface so a new
+    // route cannot quietly reintroduce it.
+    const adminToken = await login(ADMIN.email, ADMIN.password);
+
+    const routes: { path: string; method: string; status?: number }[] = [
+      { path: "/api/campaigns/not-a-uuid", method: "GET" },
+      { path: "/api/campaigns/not-a-uuid", method: "PATCH" },
+      { path: "/api/programmes/not-a-uuid", method: "GET" },
+      { path: "/api/programmes/not-a-uuid", method: "PATCH" },
+      { path: "/api/programmes/not-a-uuid", method: "DELETE" },
+      { path: "/api/resources/not-a-uuid", method: "GET" },
+      { path: "/api/resources/not-a-uuid", method: "PATCH" },
+      { path: "/api/resources/not-a-uuid", method: "DELETE" },
+      { path: "/api/resources/not-a-uuid/availability?date=2026-01-05", method: "GET" },
+      { path: "/api/bookings/not-a-uuid", method: "GET" },
+      { path: "/api/bookings/not-a-uuid/cancel", method: "PATCH" },
+      { path: "/api/bookings/not-a-uuid/approve", method: "PATCH" },
+      { path: "/api/bookings/not-a-uuid/reject", method: "PATCH" },
+      { path: "/api/members/not-a-uuid", method: "GET" },
+      { path: "/api/members/not-a-uuid/tier", method: "PATCH" },
+      // These two hand out or remove access, so they re-authenticate. That
+      // gate sits outside the id guard and answers 401 first, which is
+      // deliberate: a caller who has not re-proven themselves learns nothing
+      // at all about the id.
+      { path: "/api/members/not-a-uuid/role", method: "PATCH", status: 401 },
+      { path: "/api/donations/not-a-uuid/follow-up", method: "PATCH" },
+      { path: "/api/staff/not-a-uuid/deactivate", method: "PATCH", status: 401 },
+      { path: "/api/notifications/not-a-uuid/read", method: "PATCH" },
+    ];
+
+    for (const route of routes) {
+      const result = await call(route.path, {
+        method: route.method,
+        token: adminToken,
+        // fetch rejects a GET with a body, and the write routes are expected
+        // to fail on the id before their payload is ever looked at.
+        ...(route.method === "GET" ? {} : { body: {} }),
+      });
+      assert.equal(
+        result.status,
+        route.status ?? 404,
+        `${route.method} ${route.path} answered ${result.status}: ${JSON.stringify(result.body)}`,
+      );
+    }
+
+    // The guard must not become a way to probe existence: a well-formed id that
+    // does not exist is still a plain 404 with no extra detail.
+    const missing = await call("/api/campaigns/00000000-0000-4000-8000-000000000000");
+    assert.equal(missing.status, 404);
+    assert.equal(
+      missing.body.error,
+      "Campaign not found",
+      "a real miss keeps its specific message",
+    );
+
+    // And it runs after auth, so an anonymous caller on a protected route
+    // learns nothing at all. (Campaign detail is deliberately public, so it
+    // answers 404 for anyone; booking detail is not.)
+    const anonymous = await call("/api/bookings/not-a-uuid");
+    assert.equal(
+      anonymous.status,
+      401,
+      "an unauthenticated bad id must not be distinguishable from a good one",
+    );
+    const anonymousGood = await call(
+      "/api/bookings/00000000-0000-4000-8000-000000000000",
+    );
+    assert.equal(anonymousGood.status, 401);
   });
 
   test("GET /api/programmes/:id reads one programme, including a deactivated one", async () => {
