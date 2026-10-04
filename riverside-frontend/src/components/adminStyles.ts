@@ -31,6 +31,9 @@ export const itemStyle = {
   justifyContent: "space-between",
   alignItems: "flex-start",
   gap: "1rem",
+  // Without wrapping, the actions press against the details on a narrow phone,
+  // which is the squeezed layout these panels replaced.
+  flexWrap: "wrap" as const,
   padding: "0.75rem 0",
   borderBottom: "1px solid #e2e8f0",
 } as const;
