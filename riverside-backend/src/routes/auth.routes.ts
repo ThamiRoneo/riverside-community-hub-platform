@@ -74,18 +74,36 @@ router.post("/login", async (req, res) => {
     password,
   });
 
-  if (error) return res.status(401).json({ error: error.message });
+  // A request that never reached the service is not a wrong password, and
+  // neither is being rate-limited. Only an answered 4xx about the credentials
+  // means those were rejected.
+  if (error) {
+    const status = (error as { status?: number }).status;
+    if (status === 429)
+      return res.status(429).json({ error: "Too many sign-in attempts" });
+    return status != null
+      ? res.status(401).json({ error: error.message })
+      : res.status(503).json({ error: "Sign-in service is unavailable" });
+  }
+
   if (!data.session || !data.user)
     return res.status(401).json({ error: "No active session was created" });
 
   const { data: profile, error: profileError } = await supabaseAdmin
     .from("profiles")
-    .select("role, full_name, membership_tier, phone, membership_expires_at, created_at")
+    .select(
+      "role, full_name, membership_tier, phone, membership_expires_at, created_at, active",
+    )
     .eq("id", data.user.id)
     .single();
 
   if (profileError || !profile)
     return res.status(403).json({ error: "No profile found for user" });
+
+  // Refused here rather than handed a session that every later request rejects,
+  // so the person is told why instead of seeing a loop of 403s.
+  if (profile.active === false)
+    return res.status(403).json({ error: "This account has been deactivated" });
 
   return res.status(200).json({
     message: "Logged in successfully",
@@ -125,7 +143,10 @@ router.post("/reauthenticate", requireAuth, async (req, res) => {
   });
 
   if (error || !data.user || data.user.id !== req.user!.id) {
-    return res.status(401).json({ error: "Invalid credentials" });
+    const answered = (error as { status?: number } | null)?.status != null;
+    return answered || !error
+      ? res.status(401).json({ error: "Invalid credentials" })
+      : res.status(503).json({ error: "Sign-in service is unavailable" });
   }
 
   return res.status(200).json({

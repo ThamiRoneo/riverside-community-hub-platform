@@ -89,31 +89,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [user]);
 
   const fetchProfile = useCallback(async () => {
-     if (!user) return;
-     try {
-       const profileData = await apiGet<{
-         profile: MemberProfileRecord;
-         membership_status: string;
-       }>("/members/me");
-       // Update the user's fullName from the profile
-       setUser(prev => {
-         if (!prev) return prev;
-         return {
-           ...prev,
-           fullName: profileData.profile.full_name,
-           // We could also update membershipTier if we want to display it
-         };
-       });
-     } catch (err) {
-       // console.error("Failed to fetch profile", err);
-     }
-   }, [user]);
- 
-   useEffect(() => {
-     if (user) {
-       fetchProfile();
-     }
-   }, [user, fetchProfile]);
+    if (!user) return;
+    try {
+      // Own profile comes from /profile/me. There is no /members/me: that path
+      // falls through to the staff-and-admin-only GET /members/:id, so every
+      // member got a 403 and the failure below was swallowed.
+      const profile = await apiGet<MemberProfileRecord>("/profile/me");
+      setUser(prev => (prev ? { ...prev, fullName: profile.full_name } : prev));
+    } catch (err) {
+      console.error("Failed to fetch profile", err);
+    }
+  }, [user]);
+
+  useEffect(() => {
+    if (user) {
+      fetchProfile();
+    }
+  }, [user, fetchProfile]);
   
   const login = useCallback(async (email: string, password: string) => {
     const response = await apiPost<AuthResponse>("/auth/login", {

@@ -22,7 +22,24 @@ let server: Server;
 let baseUrl: string;
 let testUserId: string | null = null;
 
+/** POST /api/bookings body in the contract's shape. */
+const bookingRequest = (resourceId: string, start: string, end: string) => ({
+  resource_id: resourceId,
+  start_time: start,
+  end_time: end,
+  purpose: "Community session",
+  contact_phone: "0721234567",
+  people_count: 4,
+});
+
 const uniqueEmail = () => `authtest${Date.now()}${Math.floor(Math.random() * 1e6)}@riverside.com`;
+
+// Signup and invite go through GoTrue and send a real email, and the send quota
+// is per project and shared across everyone running the suite. Repeated runs
+// silently exhausted it, so the mail-sending cases are opt-in: set
+// RCH_EMAIL_TESTS=1 to spend a message on them. Everything else creates users
+// through the admin API, which sends nothing.
+const EMAIL_TESTS = process.env.RCH_EMAIL_TESTS === "1";
 
 /** Narrows a seed-dependent lookup so a missing row fails loudly. */
 function required<T>(value: T | null | undefined, label: string): T {
@@ -41,15 +58,17 @@ async function removeProbeBooking(bookingId: string) {
 /**
  * Creates a donation and returns a cleanup that removes it.
  *
- * campaign.current_amount is maintained by an insert-only trigger, so the
- * total has to be restored explicitly when a probe donation is removed.
+ * apply_donation_to_campaign adds the amount on insert and subtracts it on
+ * delete, so removing the probe is enough to restore the campaign total. Writing
+ * the total back from a snapshot instead would stomp on any legitimate change
+ * made while the probe was alive.
  */
 async function createProbeDonation(overrides: Record<string, unknown> = {}) {
   const campaign = required(
     (
       await supabaseAdmin
         .from("campaigns")
-        .select("id, current_amount")
+        .select("id")
         .eq("active", true)
         .limit(1)
         .single()
@@ -79,23 +98,46 @@ async function createProbeDonation(overrides: Record<string, unknown> = {}) {
     donation: data,
     async cleanup() {
       await supabaseAdmin.from("donations").delete().eq("id", data.id);
-      await supabaseAdmin
-        .from("campaigns")
-        .update({ current_amount: campaign.current_amount })
-        .eq("id", campaign.id);
     },
   };
 }
 
+/**
+ * Tokens are cached per account for the length of a run.
+ *
+ * The suite signs in around forty times, which is enough to trip Supabase's
+ * sign-in rate limit and turn unrelated tests red with a spurious 401. Role is
+ * read from the database on every request rather than from the token, so a
+ * cached token still reflects a role change made by an earlier test.
+ */
+const sessionTokens = new Map<string, Promise<string>>();
+
 async function login(email: string, password: string) {
-  const response = await fetch(`${baseUrl}/api/auth/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password }),
+  const cached = sessionTokens.get(email);
+  if (cached) return cached;
+
+  const attempt = (async () => {
+    const response = await fetch(`${baseUrl}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password }),
+    });
+    const body = await response.json();
+    assert.equal(
+      response.status,
+      200,
+      `login should succeed for ${email}, got ${response.status}: ${JSON.stringify(body)}`,
+    );
+    return body.session.access_token as string;
+  })();
+
+  sessionTokens.set(email, attempt);
+  // A cached rejection would make every later login for this account fail too,
+  // turning one transient error into a cascade of confusing ones.
+  attempt.catch(() => {
+    if (sessionTokens.get(email) === attempt) sessionTokens.delete(email);
   });
-  assert.equal(response.status, 200, "login should succeed");
-  const body = await response.json();
-  return body.session.access_token as string;
+  return attempt;
 }
 
 async function call(
@@ -138,18 +180,16 @@ after(async () => {
 
 describe("signup", () => {
   test("creates a profile without colliding with the auth trigger", async (t) => {
+    if (!EMAIL_TESTS) {
+      t.skip("set RCH_EMAIL_TESTS=1 to run; signup sends a real email");
+      return;
+    }
+
     const email = uniqueEmail();
     const result = await call("/api/auth/signup", {
       method: "POST",
       body: { email, password: TEST_PASSWORD, full_name: "Auth Test" },
     });
-
-    // Supabase rate-limits outbound signup mail per project. That is an
-    // environment constraint, not a regression, so do not report it as one.
-    if (result.status === 400 && /rate limit/i.test(JSON.stringify(result.body))) {
-      t.skip(`signup rate limited by Supabase: ${result.body.error}`);
-      return;
-    }
 
     assert.equal(
       result.status,
@@ -466,11 +506,11 @@ describe("PATCH /api/bookings/:id/cancel", () => {
     const created = await call("/api/bookings", {
       method: "POST",
       token,
-      body: { facility_id: facility.id, start_at: start, end_at: end },
+      body: bookingRequest(facility.id, start, end),
     });
     assert.equal(created.status, 201, JSON.stringify(created.body));
 
-    const bookingId = created.body.booking.id;
+    const bookingId = created.body.id;
     const cancelled = await call(`/api/bookings/${bookingId}/cancel`, {
       method: "PATCH",
       token,
@@ -503,28 +543,23 @@ describe("PATCH /api/donations/:id/follow-up", () => {
   });
 
   test("returns 409 for a donation that is already followed up", async () => {
-    const donation = required(
-      (
-        await supabaseAdmin
-          .from("donations")
-          .select("id")
-          .eq("status", "followed_up")
-          .limit(1)
-          .single()
-      ).data,
-      "at least one followed_up donation",
-    );
+    // Provisioned here rather than read from the seed, so the check does not
+    // depend on a fixture row existing in whatever state the seed last left.
+    const probe = await createProbeDonation({ status: "followed_up" });
 
+    try {
+      const token = await login(ADMIN.email, ADMIN.password);
+      const result = await call(`/api/donations/${probe.donation.id}/follow-up`, {
+        method: "PATCH",
+        token,
+        body: { staff_note: "should not apply" },
+      });
 
-    const token = await login(ADMIN.email, ADMIN.password);
-    const result = await call(`/api/donations/${donation.id}/follow-up`, {
-      method: "PATCH",
-      token,
-      body: { staff_note: "should not apply" },
-    });
-
-    // Regression: the transition ran from any prior state.
-    assert.equal(result.status, 409, JSON.stringify(result.body));
+      // Regression: the transition ran from any prior state.
+      assert.equal(result.status, 409, JSON.stringify(result.body));
+    } finally {
+      await probe.cleanup();
+    }
   });
 
   test("accepts a follow-up with no staff note, per the contract", async () => {
@@ -600,16 +635,18 @@ describe("GET /api/donations/export", () => {
   });
 });
 
-describe("DELETE /api/campaigns/:id", () => {
-  test("returns 409 when the campaign still has donations", async () => {
+describe("routes the contract does not define", () => {
+  // Deleting a campaign is not a contract capability, and it would destroy the
+  // donation history behind it. Retired the way the /api/admin stubs were.
+  test("DELETE /api/campaigns/:id is gone", async () => {
     const token = await login(ADMIN.email, ADMIN.password);
     const result = await call(
       "/api/campaigns/81111111-1111-4111-8111-111111111111",
       { method: "DELETE", token },
     );
 
-    // Regression: the FK violation surfaced as a generic 500.
-    assert.equal(result.status, 409, JSON.stringify(result.body));
+    assert.equal(result.status, 404, JSON.stringify(result.body));
+    assert.deepEqual(result.body, { error: "Not found" });
   });
 });
 
@@ -619,7 +656,7 @@ describe("POST /api/donations", () => {
       (
         await supabaseAdmin
           .from("campaigns")
-          .select("id, current_amount")
+          .select("id")
           .eq("active", true)
           .limit(1)
           .single()
@@ -663,11 +700,8 @@ describe("POST /api/donations", () => {
       assert.equal(stored.status, "paid");
       assert.equal(stored.receipt_reference, result.body.receipt_reference);
     } finally {
+      // The trigger subtracts on delete, so the total needs no manual restore.
       await supabaseAdmin.from("donations").delete().eq("id", result.body.id);
-      await supabaseAdmin
-        .from("campaigns")
-        .update({ current_amount: campaign.current_amount })
-        .eq("id", campaign.id);
     }
   });
 
@@ -676,7 +710,7 @@ describe("POST /api/donations", () => {
       (
         await supabaseAdmin
           .from("campaigns")
-          .select("id, current_amount")
+          .select("id")
           .eq("active", true)
           .limit(1)
           .single()
@@ -702,10 +736,6 @@ describe("POST /api/donations", () => {
       assert.equal(result.body.status, "pending_followup");
     } finally {
       await supabaseAdmin.from("donations").delete().eq("id", result.body.id);
-      await supabaseAdmin
-        .from("campaigns")
-        .update({ current_amount: campaign.current_amount })
-        .eq("id", campaign.id);
     }
   });
 
@@ -810,7 +840,69 @@ describe("campaign.current_amount integrity", () => {
     );
   });
 
-  test("the live total equals the sum of the campaign's donations", async () => {
+  test("a cancelled donation is withdrawn and never counted", async () => {
+    const campaign = required(
+      (
+        await supabaseAdmin
+          .from("campaigns")
+          .select("id, current_amount")
+          .eq("active", true)
+          .limit(1)
+          .single()
+      ).data,
+      "an active campaign",
+    );
+
+    const before = campaign.current_amount;
+    const probe = await createProbeDonation({ amount: 500, status: "paid" });
+
+    const afterPaid = required(
+      (
+        await supabaseAdmin
+          .from("campaigns")
+          .select("current_amount")
+          .eq("id", campaign.id)
+          .single()
+      ).data,
+      "the campaign while the donation counted",
+    );
+
+    assert.equal(
+      Number(afterPaid.current_amount),
+      Number(before) + 500,
+      "a paid donation must raise the total",
+    );
+
+    await supabaseAdmin
+      .from("donations")
+      .update({ status: "cancelled" })
+      .eq("id", probe.donation.id);
+
+    const afterCancel = required(
+      (
+        await supabaseAdmin
+          .from("campaigns")
+          .select("current_amount")
+          .eq("id", campaign.id)
+          .single()
+      ).data,
+      "the campaign after the donation was cancelled",
+    );
+
+    try {
+      // Regression: the trigger added the amount on every insert regardless of
+      // status, so a cancelled donation inflated the public progress bar for good.
+      assert.equal(
+        Number(afterCancel.current_amount),
+        Number(before),
+        "cancelling must take the amount back out",
+      );
+    } finally {
+      await probe.cleanup();
+    }
+  });
+
+  test("the live total equals the sum of the campaign's non-cancelled donations", async () => {
     const { data: campaigns } = await supabaseAdmin
       .from("campaigns")
       .select("id, title, current_amount");
@@ -818,8 +910,9 @@ describe("campaign.current_amount integrity", () => {
     for (const campaign of campaigns ?? []) {
       const { data: donations } = await supabaseAdmin
         .from("donations")
-        .select("amount")
-        .eq("campaign_id", campaign.id);
+        .select("amount, status")
+        .eq("campaign_id", campaign.id)
+        .neq("status", "cancelled");
 
       const expected = (donations ?? []).reduce(
         (total, d) => total + Number(d.amount),
@@ -829,8 +922,427 @@ describe("campaign.current_amount integrity", () => {
       assert.equal(
         Number(campaign.current_amount),
         expected,
-        `${campaign.title} total must equal the sum of its donations`,
+        `${campaign.title} total must equal the sum of its non-cancelled donations`,
       );
+    }
+  });
+});
+
+describe("GET /api/reports/summary", () => {
+  const STAFF = { email: "staff@riverside.example", password: "Password123" };
+
+  test("returns every field the contract documents", async () => {
+    const token = await login(STAFF.email, STAFF.password);
+    const result = await call("/api/reports/summary", { token });
+
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    for (const field of [
+      "bookings_this_month",
+      "bookings_delta_pct",
+      "donations_total",
+      "donations_delta_pct",
+      "active_members",
+      "active_members_delta",
+      "pending_requests",
+      "conflict_count",
+    ]) {
+      assert.equal(
+        typeof result.body[field],
+        "number",
+        `${field} must be a number, got ${typeof result.body[field]}`,
+      );
+    }
+    assert.ok(Array.isArray(result.body.bookings_by_status), "bookings_by_status must be a list");
+    assert.ok(Array.isArray(result.body.donations_over_time), "donations_over_time must be a list");
+    assert.deepStrictEqual(
+      result.body.bookings_by_status.map((b: { status: string }) => b.status),
+      ["pending", "approved", "rejected", "cancelled"],
+      "every booking status must be represented, including the empty ones",
+    );
+  });
+
+  test("rejects a date_range it does not recognise", async () => {
+    const token = await login(STAFF.email, STAFF.password);
+
+    const range = await call("/api/reports/summary?date_range=fortnight", { token });
+    assert.equal(range.status, 400, JSON.stringify(range.body));
+
+    const compare = await call("/api/reports/summary?compare_with=fortnight", { token });
+    assert.equal(compare.status, 400, JSON.stringify(compare.body));
+
+    const valid = await call("/api/reports/summary?date_range=week&compare_with=month", { token });
+    assert.equal(valid.status, 200, JSON.stringify(valid.body));
+  });
+
+  test("counts bookings that overlap another live booking on the same resource", async () => {
+    const token = await login(STAFF.email, STAFF.password);
+    const facility = required(
+      (
+        await supabaseAdmin.from("facilities").select("id").eq("active", true).limit(1).single()
+      ).data,
+      "an active facility",
+    );
+
+    const summary = async () => {
+      const result = await call("/api/reports/summary", { token });
+      return required(result.body, "a summary");
+    };
+
+    const before = await summary();
+
+    // A window well clear of the seeded bookings, so the only overlap on this
+    // facility is the pair created here. Pending bookings may overlap: the
+    // database only refuses two overlapping *approved* ones.
+    const start = new Date(Date.now() + 60 * 86_400_000).toISOString();
+    const end = new Date(Date.now() + 60 * 86_400_000 + 7_200_000).toISOString();
+    const later = new Date(Date.now() + 60 * 86_400_000 + 3_600_000).toISOString();
+    const overlapping = await supabaseAdmin
+      .from("bookings")
+      .insert([
+        { member_id: "11111111-1111-4111-8111-111111111111", facility_id: facility.id, equipment_id: null, start_at: start, end_at: end, status: "pending" },
+        { member_id: "22222222-2222-4222-8222-222222222222", facility_id: facility.id, equipment_id: null, start_at: later, end_at: end, status: "pending" },
+      ])
+      .select("id");
+
+    try {
+      assert.equal(overlapping.error, null, overlapping.error?.message);
+      const after = await summary();
+      assert.equal(
+        after.conflict_count,
+        before.conflict_count + 2,
+        "both members of an overlapping pair must be counted as conflicting",
+      );
+    } finally {
+      await supabaseAdmin.from("bookings").delete().in("id", (overlapping.data ?? []).map((b) => b.id));
+    }
+
+    const restored = await summary();
+    assert.equal(
+      restored.conflict_count,
+      before.conflict_count,
+      "removing the pair must leave no conflict behind",
+    );
+  });
+
+  test("leaves cancelled donations out of donations_total", async () => {
+    const token = await login(STAFF.email, STAFF.password);
+    const before = required((await call("/api/reports/summary", { token })).body, "a summary");
+
+    const probe = await createProbeDonation({ amount: 999, status: "cancelled" });
+
+    try {
+      const after = required((await call("/api/reports/summary", { token })).body, "a summary");
+      assert.equal(
+        after.donations_total,
+        before.donations_total,
+        "a cancelled donation is withdrawn money and must not be counted",
+      );
+    } finally {
+      await probe.cleanup();
+    }
+  });
+});
+
+describe("GET /api/reports/export", () => {
+  const ADMIN = { email: "admin@riverside.example", password: "Password123" };
+  const STAFF = { email: "staff@riverside.example", password: "Password123" };
+  const MEMBER = { email: "aisha@riverside.example", password: "Password123" };
+
+  const download = async (token: string, query = "") => {
+    const response = await fetch(`${baseUrl}/api/reports/export${query}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    return { status: response.status, text: () => response.text(), response };
+  };
+
+  test("is admin-only; staff are refused", async () => {
+    const staffToken = await login(STAFF.email, STAFF.password);
+    const result = await call("/api/reports/export", { token: staffToken });
+
+    // Regression: the summary is open to staff, but the CSV is admin-only.
+    assert.equal(result.status, 403, JSON.stringify(result.body));
+  });
+
+  test("streams a CSV of the window's rows, not the summary figures", async () => {
+    const token = await login(ADMIN.email, ADMIN.password);
+
+    // Seed a booking and a donation inside the window the export defaults to.
+    // This test used to lean on whatever rows the database happened to hold,
+    // which emptied the export silently the moment the calendar rolled into a
+    // new month and the old fixtures fell out of the range.
+    const facility = required(
+      (
+        await supabaseAdmin
+          .from("facilities")
+          .select("id")
+          .eq("active", true)
+          .limit(1)
+          .single()
+      ).data,
+      "an active facility",
+    );
+    const start = new Date(Date.now() + 150 * 86_400_000).toISOString();
+    const end = new Date(Date.now() + 151 * 86_400_000).toISOString();
+    const booking = await call("/api/bookings", {
+      method: "POST",
+      token: await login(MEMBER.email, MEMBER.password),
+      body: bookingRequest(facility.id, start, end),
+    });
+    assert.equal(booking.status, 201, JSON.stringify(booking.body));
+    const donation = await createProbeDonation({ amount: 4242 });
+
+    try {
+      const { status, text, response } = await download(token);
+
+      assert.equal(status, 200);
+      assert.match(response.headers.get("content-type") ?? "", /text\/csv/);
+      assert.match(
+        response.headers.get("content-disposition") ?? "",
+        /attachment; filename=report-month-/,
+      );
+
+      const csv = await text();
+      const [header, ...rows] = csv.split("\n");
+      assert.equal(
+        header,
+        "record_type,id,created_at,status,person_id,resource,start_at,end_at,amount,type,receipt_reference,staff_note",
+      );
+      assert.ok(rows.length > 0, "the seeded window must produce rows");
+      assert.ok(
+        rows.some((row) => row.startsWith('"booking",')),
+        "bookings must appear in the export",
+      );
+      assert.ok(
+        rows.some((row) => row.startsWith('"donation",')),
+        "donations must appear in the export",
+      );
+      // Chronological, so the file reads as an activity report.
+      const created = rows.map((row) => /"([^"]*)"/.exec(row.split(",").slice(2).join(","))?.[1] ?? "");
+      assert.ok(created.every(Boolean), "every row must carry a created_at");
+      assert.deepStrictEqual(created, [...created].sort(), "rows must be in date order");
+    } finally {
+      await removeProbeBooking(booking.body.id);
+      await donation.cleanup();
+    }
+  });
+
+  test("excludes cancelled donations and anonymises anonymous donors", async () => {
+    const token = await login(ADMIN.email, ADMIN.password);
+    const probe = await createProbeDonation({
+      amount: 4321,
+      status: "cancelled",
+      donor_name: "Cancelled probe",
+    });
+    const anonymous = await createProbeDonation({
+      amount: 21,
+      status: "paid",
+      anonymous: true,
+      donor_name: "anon-probe-export",
+      donor_email: "anon-probe-export@riverside.example",
+    });
+
+    try {
+    const csv = await (await download(token)).text();
+
+    assert.ok(!csv.includes("Cancelled probe"), "a cancelled donation must be excluded");
+    assert.ok(
+      !csv.includes("anon-probe-export"),
+      "an anonymous donor's contact details must not be exported",
+    );
+    assert.ok(
+      csv.includes(anonymous.donation.id),
+      "a paid donation is still exported",
+    );
+    // The same row must not carry the donor's profile id, which would point
+    // straight back at their profile.
+    const anonymousRow = csv.split("\n").find((line) => line.includes(anonymous.donation.id));
+    assert.ok(anonymousRow, "the anonymous donation row must be present");
+    const personColumn = anonymousRow.split(",")[4].replace(/"/g, "");
+    assert.equal(personColumn, "", "an anonymous donor's profile id must be blank");
+    } finally {
+      await probe.cleanup();
+      await anonymous.cleanup();
+    }
+  });
+
+  test("honours the date_range filter", async () => {
+    const token = await login(ADMIN.email, ADMIN.password);
+
+    const bad = await call("/api/reports/export?date_range=fortnight", { token });
+    assert.equal(bad.status, 400, JSON.stringify(bad.body));
+
+    // Seeded rows all fall inside the last week, so a week and a year would look
+    // identical. This probe is stamped two months back, which only the wider
+    // ranges may include.
+    const old = await createProbeDonation({
+      amount: 777,
+      status: "paid",
+      created_at: new Date(Date.now() - 60 * 86_400_000).toISOString(),
+    });
+
+    try {
+      const week = await (await download(token, "?date_range=week")).text();
+      const month = await (await download(token, "?date_range=month")).text();
+      const year = await (await download(token, "?date_range=year")).text();
+
+      assert.ok(!week.includes(old.donation.id), "a two-month-old row is outside a week");
+      assert.ok(!month.includes(old.donation.id), "a two-month-old row is outside this month");
+      assert.ok(year.includes(old.donation.id), "a two-month-old row is inside a year");
+    } finally {
+      await old.cleanup();
+    }
+  });
+});
+
+describe("staff deactivation", () => {
+  const STAFF = { email: "staff@riverside.example", password: "Password123" };
+  const STAFF_ID = "44444444-4444-4444-8444-444444444444";
+  const ADMIN_ID = "55555555-5555-4555-8555-555555555555";
+
+  const restore = (id: string) =>
+    supabaseAdmin.from("profiles").update({ active: true }).eq("id", id);
+
+  const reauthHeader = async (token: string) => {
+    const reauth = await call("/api/auth/reauthenticate", {
+      method: "POST",
+      token,
+      body: { email: ADMIN.email, password: ADMIN.password },
+    });
+    return { "X-Reauth-Token": reauth.body.reauth_token as string };
+  };
+
+  test("GET /api/staff is admin-only and returns the contract shape", async () => {
+    const adminToken = await login(ADMIN.email, ADMIN.password);
+    const result = await call("/api/staff", { token: adminToken });
+
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    assert.ok(Array.isArray(result.body.staff), "staff must be a list");
+    assert.ok(result.body.staff.length > 0, "the seeded staff account must appear");
+    for (const person of result.body.staff) {
+      for (const field of ["id", "full_name", "role", "joined_at"]) {
+        assert.ok(field in person, `${field} is required by the contract`);
+      }
+      assert.ok(["staff", "admin"].includes(person.role), "only staff and admins belong here");
+    }
+
+    const staffToken = await login(STAFF.email, STAFF.password);
+    const denied = await call("/api/staff", { token: staffToken });
+    assert.equal(denied.status, 403, JSON.stringify(denied.body));
+  });
+
+  test("requires reauthentication to deactivate", async () => {
+    const adminToken = await login(ADMIN.email, ADMIN.password);
+    const result = await call(`/api/staff/${STAFF_ID}/deactivate`, {
+      method: "PATCH",
+      token: adminToken,
+    });
+
+    // Regression: revoking someone's access is the same class of action as
+    // changing their role, which already demands a fresh password check.
+    assert.equal(result.status, 401, JSON.stringify(result.body));
+
+    const still = await supabaseAdmin
+      .from("profiles")
+      .select("active")
+      .eq("id", STAFF_ID)
+      .single();
+    assert.equal(still.data?.active, true, "a refused call must not deactivate anyone");
+  });
+
+  test("revokes access and login while keeping the profile row", async () => {
+    const adminToken = await login(ADMIN.email, ADMIN.password);
+    const headers = await reauthHeader(adminToken);
+
+    try {
+      const result = await call(`/api/staff/${STAFF_ID}/deactivate`, {
+        method: "PATCH",
+        token: adminToken,
+        headers,
+      });
+
+      assert.equal(result.status, 200, JSON.stringify(result.body));
+      assert.equal(result.body.id, STAFF_ID);
+      assert.equal(result.body.active, false);
+
+      // The cached token still verifies, so the refusal has to come from the
+      // profile check rather than from an expired session.
+      const blocked = await call("/api/reports/summary", {
+        token: await login(STAFF.email, STAFF.password),
+      });
+      assert.equal(blocked.status, 403, JSON.stringify(blocked.body));
+
+      const profile = await supabaseAdmin
+        .from("profiles")
+        .select("id, role, active")
+        .eq("id", STAFF_ID)
+        .single();
+      assert.ok(profile.data, "the profile row must survive deactivation");
+      assert.equal(profile.data.active, false);
+    } finally {
+      await restore(STAFF_ID);
+    }
+
+    const allowed = await call("/api/reports/summary", {
+      token: await login(STAFF.email, STAFF.password),
+    });
+    assert.equal(allowed.status, 200, "restoring the flag must restore access");
+  });
+
+  test("refuses to lock the last admin out", async () => {
+    const adminToken = await login(ADMIN.email, ADMIN.password);
+    const headers = await reauthHeader(adminToken);
+
+    const self = await call(`/api/staff/${ADMIN_ID}/deactivate`, {
+      method: "PATCH",
+      token: adminToken,
+      headers,
+    });
+    assert.equal(self.status, 400, "an admin cannot deactivate their own account");
+
+    const { count } = await supabaseAdmin
+      .from("profiles")
+      .select("id", { count: "exact", head: true })
+      .eq("role", "admin")
+      .eq("active", true);
+
+    // The seeded data has exactly one admin, so deactivating it must be refused
+    // whether or not the self-check fires first.
+    if ((count ?? 0) === 1) {
+      const other = await call("/api/staff/44444444-4444-4444-8444-444444444444/deactivate", {
+        method: "PATCH",
+        token: adminToken,
+        headers,
+      });
+      assert.equal(other.status, 200, JSON.stringify(other.body));
+      await restore("44444444-4444-4444-8444-444444444444");
+    }
+  });
+
+  test("a deactivated account cannot sign in", async () => {
+    const adminToken = await login(ADMIN.email, ADMIN.password);
+    const headers = await reauthHeader(adminToken);
+
+    await restore(STAFF_ID);
+    await call(`/api/staff/${STAFF_ID}/deactivate`, {
+      method: "PATCH",
+      token: adminToken,
+      headers,
+    });
+
+    try {
+      const response = await fetch(`${baseUrl}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: STAFF.email, password: STAFF.password }),
+      });
+      const body = await response.json();
+
+      // Refused at sign-in rather than handed a session every later call rejects.
+      assert.equal(response.status, 403, JSON.stringify(body));
+      assert.match(body.error, /deactivated/i);
+    } finally {
+      await restore(STAFF_ID);
+      sessionTokens.delete(STAFF.email);
     }
   });
 });
@@ -903,13 +1415,13 @@ describe("access control: contract role matrix", () => {
 
     // Regression: staff could deactivate resources, removing them from
     // public booking. The contract makes deletion admin-only.
-    const deniedFacility = await call(`/api/facilities/${facility.id}`, {
+    const deniedFacility = await call(`/api/resources/${facility.id}`, {
       method: "DELETE",
       token: staffToken,
     });
     assert.equal(deniedFacility.status, 403, JSON.stringify(deniedFacility.body));
 
-    const deniedEquipment = await call(`/api/equipment/${equipment.id}`, {
+    const deniedEquipment = await call(`/api/resources/${equipment.id}`, {
       method: "DELETE",
       token: staffToken,
     });
@@ -972,6 +1484,131 @@ describe("access control: contract role matrix", () => {
     }
   });
 
+  test("every :id route answers 404 for a malformed id, not 500", async () => {
+    // Postgres rejects a non-uuid equality filter with a 22P02 syntax error.
+    // Any route that filtered on a raw :id therefore turned a bad URL into a
+    // 500 and blamed the database. This walks the whole :id surface so a new
+    // route cannot quietly reintroduce it.
+    const adminToken = await login(ADMIN.email, ADMIN.password);
+
+    const routes: { path: string; method: string; status?: number }[] = [
+      { path: "/api/campaigns/not-a-uuid", method: "GET" },
+      { path: "/api/campaigns/not-a-uuid", method: "PATCH" },
+      { path: "/api/programmes/not-a-uuid", method: "GET" },
+      { path: "/api/programmes/not-a-uuid", method: "PATCH" },
+      { path: "/api/programmes/not-a-uuid", method: "DELETE" },
+      { path: "/api/resources/not-a-uuid", method: "GET" },
+      { path: "/api/resources/not-a-uuid", method: "PATCH" },
+      { path: "/api/resources/not-a-uuid", method: "DELETE" },
+      { path: "/api/resources/not-a-uuid/availability?date=2026-01-05", method: "GET" },
+      { path: "/api/bookings/not-a-uuid", method: "GET" },
+      { path: "/api/bookings/not-a-uuid/cancel", method: "PATCH" },
+      { path: "/api/bookings/not-a-uuid/approve", method: "PATCH" },
+      { path: "/api/bookings/not-a-uuid/reject", method: "PATCH" },
+      { path: "/api/members/not-a-uuid", method: "GET" },
+      { path: "/api/members/not-a-uuid/tier", method: "PATCH" },
+      // These two hand out or remove access, so they re-authenticate. That
+      // gate sits outside the id guard and answers 401 first, which is
+      // deliberate: a caller who has not re-proven themselves learns nothing
+      // at all about the id.
+      { path: "/api/members/not-a-uuid/role", method: "PATCH", status: 401 },
+      { path: "/api/donations/not-a-uuid/follow-up", method: "PATCH" },
+      { path: "/api/staff/not-a-uuid/deactivate", method: "PATCH", status: 401 },
+      { path: "/api/notifications/not-a-uuid/read", method: "PATCH" },
+    ];
+
+    for (const route of routes) {
+      const result = await call(route.path, {
+        method: route.method,
+        token: adminToken,
+        // fetch rejects a GET with a body, and the write routes are expected
+        // to fail on the id before their payload is ever looked at.
+        ...(route.method === "GET" ? {} : { body: {} }),
+      });
+      assert.equal(
+        result.status,
+        route.status ?? 404,
+        `${route.method} ${route.path} answered ${result.status}: ${JSON.stringify(result.body)}`,
+      );
+    }
+
+    // The guard must not become a way to probe existence: a well-formed id that
+    // does not exist is still a plain 404 with no extra detail.
+    const missing = await call("/api/campaigns/00000000-0000-4000-8000-000000000000");
+    assert.equal(missing.status, 404);
+    assert.equal(
+      missing.body.error,
+      "Campaign not found",
+      "a real miss keeps its specific message",
+    );
+
+    // And it runs after auth, so an anonymous caller on a protected route
+    // learns nothing at all. (Campaign detail is deliberately public, so it
+    // answers 404 for anyone; booking detail is not.)
+    const anonymous = await call("/api/bookings/not-a-uuid");
+    assert.equal(
+      anonymous.status,
+      401,
+      "an unauthenticated bad id must not be distinguishable from a good one",
+    );
+    const anonymousGood = await call(
+      "/api/bookings/00000000-0000-4000-8000-000000000000",
+    );
+    assert.equal(anonymousGood.status, 401);
+  });
+
+  test("GET /api/programmes/:id reads one programme, including a deactivated one", async () => {
+    // The contract lists a programme detail read that had no route at all.
+    const suffix = Date.now();
+    const { data: programme, error } = await supabaseAdmin
+      .from("programmes")
+      .insert({
+        title: `Detail probe ${suffix}`,
+        description: "Programme detail probe",
+        age_range: "5-12",
+        schedule_info: "Mon 16:00",
+        active: true,
+      })
+      .select("id, title, description, age_range, schedule_info, active")
+      .single();
+
+    assert.ok(!error && programme, JSON.stringify(error));
+    const programmeId = programme!.id;
+
+    try {
+      // Public: the contract puts this alongside the public listing.
+      const detail = await call(`/api/programmes/${programmeId}`);
+      assert.equal(detail.status, 200, JSON.stringify(detail.body));
+      assert.equal(detail.body.id, programmeId);
+      assert.equal(detail.body.title, `Detail probe ${suffix}`);
+      assert.equal(detail.body.schedule_info, "Mon 16:00");
+
+      // Deactivated programmes stay reachable: PATCH uses the same id, so
+      // staff have to be able to look at what they are reactivating. The
+      // listing hides them, which is why this is not a contradiction.
+      await supabaseAdmin
+        .from("programmes")
+        .update({ active: false })
+        .eq("id", programmeId);
+
+      const deactivated = await call(`/api/programmes/${programmeId}`);
+      assert.equal(deactivated.status, 200, JSON.stringify(deactivated.body));
+      assert.equal(deactivated.body.active, false);
+
+      const unknown = await call(
+        "/api/programmes/00000000-0000-4000-8000-000000000000",
+      );
+      assert.equal(unknown.status, 404, JSON.stringify(unknown.body));
+
+      // Postgres answers a non-uuid filter with a 22P02 syntax error, which
+      // would surface as a 500 and blame the database for a bad URL.
+      const malformed = await call("/api/programmes/not-a-uuid");
+      assert.equal(malformed.status, 404, JSON.stringify(malformed.body));
+    } finally {
+      await supabaseAdmin.from("programmes").delete().eq("id", programmeId);
+    }
+  });
+
   test("only a member may create a booking", async () => {
     const start = new Date(Date.now() + 150 * 86_400_000).toISOString();
     const end = new Date(Date.now() + 151 * 86_400_000).toISOString();
@@ -987,7 +1624,7 @@ describe("access control: contract role matrix", () => {
       "an active facility",
     );
 
-    const body = { facility_id: facility.id, start_at: start, end_at: end };
+    const body = bookingRequest(facility.id, start, end);
 
     // Regression: any authenticated user, including staff, could create a
     // booking attributed to their own profile.
@@ -1007,6 +1644,770 @@ describe("access control: contract role matrix", () => {
     });
     assert.equal(member.status, 201, JSON.stringify(member.body));
 
-    await removeProbeBooking(member.body.booking.id);
+    await removeProbeBooking(member.body.id);
+  });
+});
+
+describe("staff invite", () => {
+  const STAFF = { email: "staff@riverside.example", password: "Password123" };
+
+  const reauthHeader = async (token: string) => {
+    const reauth = await call("/api/auth/reauthenticate", {
+      method: "POST",
+      token,
+      body: { email: ADMIN.email, password: ADMIN.password },
+    });
+    return { "X-Reauth-Token": reauth.body.reauth_token as string };
+  };
+
+  // Both refusals happen in middleware, before any mail is sent, so they cost
+  // no quota and stay in the default run.
+  test("is admin-only and demands reauthentication", async () => {
+    const staffToken = await login(STAFF.email, STAFF.password);
+    const asStaff = await call("/api/staff/invite", {
+      method: "POST",
+      token: staffToken,
+      body: { email: uniqueEmail(), role: "staff" },
+    });
+    assert.equal(asStaff.status, 403, JSON.stringify(asStaff.body));
+
+    const adminToken = await login(ADMIN.email, ADMIN.password);
+    const noReauth = await call("/api/staff/invite", {
+      method: "POST",
+      token: adminToken,
+      body: { email: uniqueEmail(), role: "staff" },
+    });
+    assert.equal(noReauth.status, 401, JSON.stringify(noReauth.body));
+  });
+
+  test("assigns the admin's chosen role instead of the trigger default", async (t) => {
+    if (!EMAIL_TESTS) {
+      t.skip("set RCH_EMAIL_TESTS=1 to run; inviting sends a real email");
+      return;
+    }
+
+    const adminToken = await login(ADMIN.email, ADMIN.password);
+    const headers = await reauthHeader(adminToken);
+    let inviteId: string | null = null;
+
+    try {
+      const result = await call("/api/staff/invite", {
+        method: "POST",
+        token: adminToken,
+        headers,
+        body: { email: uniqueEmail(), role: "staff" },
+      });
+
+      assert.equal(result.status, 201, JSON.stringify(result.body));
+      assert.equal(result.body.status, "pending");
+      inviteId = result.body.invite_id as string;
+      assert.ok(inviteId, "the contract requires invite_id");
+
+      const { data: profile, error } = await supabaseAdmin
+        .from("profiles")
+        .select("role")
+        .eq("id", inviteId)
+        .single();
+
+      assert.equal(error, null);
+      // Regression: the auth trigger creates every profile as a member, so the
+      // role the admin picked was dropped and the invitee got no access.
+      assert.equal(profile.role, "staff");
+    } finally {
+      if (inviteId) await supabaseAdmin.auth.admin.deleteUser(inviteId);
+    }
+  });
+});
+
+describe("resources: the unified room and equipment surface", () => {
+  const STAFF = { email: "staff@riverside.example", password: "Password123" };
+
+  /** A day far enough out that no seeded booking can reach it. */
+  const quietDay = "2099-06-15";
+
+  const firstResourceOf = async (type: "room" | "equipment") =>
+    required(
+      (
+        await call(`/api/resources?type=${type}&page_size=1`)
+      ).body.resources?.[0],
+      `a ${type} resource`,
+    );
+
+  test("lists both kinds through one shape, without a token", async () => {
+    const result = await call("/api/resources");
+
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    assert.ok(Array.isArray(result.body.resources));
+    assert.equal(typeof result.body.total, "number");
+
+    const types = new Set<string>();
+    for (const resource of result.body.resources) {
+      for (const field of ["id", "name", "type", "capacity", "description"])
+        assert.ok(field in resource, `${field} is required by the contract`);
+      types.add(resource.type);
+    }
+    // The regression: rooms and equipment lived on separate endpoints, so a
+    // client had to call both and merge before it could show one catalogue.
+    assert.ok(types.has("room"), "rooms must appear");
+    assert.ok(types.has("equipment"), "equipment must appear");
+  });
+
+  test("filters by type, capacity and search, and rejects a bad type", async () => {
+    const rooms = await call("/api/resources?type=room");
+    assert.equal(rooms.status, 200);
+    for (const resource of rooms.body.resources)
+      assert.equal(resource.type, "room");
+
+    const big = await call("/api/resources?capacity_min=20");
+    assert.equal(big.status, 200);
+    for (const resource of big.body.resources)
+      assert.ok(resource.capacity >= 20, `${resource.name} is under 20`);
+
+    const target = await firstResourceOf("room");
+    const needle = target.name.split(" ")[0];
+    const found = await call(`/api/resources?search=${encodeURIComponent(needle)}`);
+    assert.equal(found.status, 200);
+    assert.ok(
+      found.body.resources.some((r: { id: string }) => r.id === target.id),
+      `searching "${needle}" must find ${target.name}`,
+    );
+
+    const bad = await call("/api/resources?type=garden");
+    assert.equal(bad.status, 400, JSON.stringify(bad.body));
+  });
+
+  test("availability covers 09:00 to 17:00 in hourly slots", async () => {
+    const room = await firstResourceOf("room");
+    const result = await call(
+      `/api/resources/${room.id}/availability?date=${quietDay}`,
+    );
+
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    assert.equal(result.body.slots.length, 8);
+
+    const [first, last] = [result.body.slots[0], result.body.slots.at(-1)];
+    assert.equal(first.start_time, `${quietDay}T09:00:00.000Z`);
+    assert.equal(last.end_time, `${quietDay}T17:00:00.000Z`);
+    for (const slot of result.body.slots)
+      assert.equal(slot.status, "available", "the quiet day has no bookings");
+  });
+
+  test("a booked hour reads unavailable and leaves the rest open", async () => {
+    const room = await firstResourceOf("room");
+    const { data: booking, error } = await supabaseAdmin
+      .from("bookings")
+      .insert({
+        member_id: "11111111-1111-4111-8111-111111111111",
+        facility_id: room.id,
+        start_at: `${quietDay}T10:00:00.000Z`,
+        end_at: `${quietDay}T11:30:00.000Z`,
+        status: "approved",
+        purpose: "Availability probe",
+      })
+      .select("id")
+      .single();
+    assert.equal(error, null, "probe booking must be insertable");
+
+    try {
+      const result = await call(
+        `/api/resources/${room.id}/availability?date=${quietDay}`,
+      );
+      const statuses = result.body.slots.map((s: { status: string }) => s.status);
+
+      // 09:00 free, the 10:00 slot is inside the booking and so is 11:00,
+      // because the booking runs to 11:30.
+      assert.equal(statuses[0], "available");
+      assert.equal(statuses[1], "unavailable");
+      assert.equal(statuses[2], "unavailable");
+      assert.equal(statuses[3], "available");
+    } finally {
+      await supabaseAdmin.from("bookings").delete().eq("id", booking!.id);
+    }
+  });
+
+  test("availability rejects a missing or impossible date", async () => {
+    const room = await firstResourceOf("room");
+
+    const missing = await call(`/api/resources/${room.id}/availability`);
+    assert.equal(missing.status, 400);
+
+    const impossible = await call(
+      `/api/resources/${room.id}/availability?date=2099-02-31`,
+    );
+    assert.equal(impossible.status, 400, JSON.stringify(impossible.body));
+
+    const unknown = await call(
+      `/api/resources/44444444-4444-4444-8444-444444444444/availability?date=${quietDay}`,
+    );
+    assert.equal(unknown.status, 404);
+  });
+
+  test("staff create and edit; only an admin deletes", async () => {
+    const staffToken = await login(STAFF.email, STAFF.password);
+    const adminToken = await login(ADMIN.email, ADMIN.password);
+    const suffix = Date.now();
+    // Every probe is recorded as it is created. Tracking only one of them let
+    // the equipment probe survive the cleanup and pile up in the catalogue.
+    const probes: { table: "facilities" | "equipment"; id: string }[] = [];
+
+    try {
+      const created = await call("/api/resources", {
+        method: "POST",
+        token: staffToken,
+        body: {
+          name: `Probe room ${suffix}`,
+          type: "room",
+          capacity: 8,
+          description: "Created by the resource test",
+        },
+      });
+      assert.equal(created.status, 201, JSON.stringify(created.body));
+      const createdId = created.body.resource.id as string;
+      probes.push({ table: "facilities", id: createdId });
+      assert.equal(created.body.resource.type, "room");
+
+      const equipment = await call("/api/resources", {
+        method: "POST",
+        token: staffToken,
+        body: {
+          name: `Probe kit ${suffix}`,
+          type: "equipment",
+          capacity: 3,
+          description: "Created by the resource test",
+        },
+      });
+      assert.equal(equipment.status, 201, JSON.stringify(equipment.body));
+      assert.equal(equipment.body.resource.type, "equipment");
+      probes.push({
+        table: "equipment",
+        id: equipment.body.resource.id as string,
+      });
+
+      const edited = await call(`/api/resources/${createdId}`, {
+        method: "PATCH",
+        token: staffToken,
+        body: { capacity: 12 },
+      });
+      assert.equal(edited.status, 200, JSON.stringify(edited.body));
+      assert.equal(edited.body.resource.capacity, 12);
+
+      // Regression: staff could delete, but the contract reserves deletion for
+      // admins because it removes a resource from public booking.
+      const staffDelete = await call(`/api/resources/${createdId}`, {
+        method: "DELETE",
+        token: staffToken,
+      });
+      assert.equal(staffDelete.status, 403);
+
+      const adminDelete = await call(`/api/resources/${createdId}`, {
+        method: "DELETE",
+        token: adminToken,
+      });
+      assert.equal(adminDelete.status, 204);
+
+      const gone = await call(`/api/resources/${createdId}`);
+      assert.equal(gone.status, 404, "a deleted resource must not be listed");
+    } finally {
+      for (const probe of probes)
+        await supabaseAdmin.from(probe.table).delete().eq("id", probe.id);
+    }
+  });
+
+  test("the retired /facilities and /equipment paths are gone", async () => {
+    const facilities = await call("/api/facilities");
+    assert.equal(facilities.status, 404, JSON.stringify(facilities.body));
+
+    const equipment = await call("/api/equipment");
+    assert.equal(equipment.status, 404, JSON.stringify(equipment.body));
+  });
+});
+
+describe("bookings: own list and the staff queue", () => {
+  const STAFF = { email: "staff@riverside.example", password: "Password123" };
+  const MEMBER = { email: "aisha@riverside.example", password: "Password123" };
+
+  test("GET /api/bookings/mine is member-only and splits upcoming from past", async () => {
+    const memberToken = await login(MEMBER.email, MEMBER.password);
+    const result = await call("/api/bookings/mine", { token: memberToken });
+
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    assert.ok(Array.isArray(result.body.bookings));
+    assert.equal(typeof result.body.total, "number");
+    assert.equal(typeof result.body.upcoming_count, "number");
+    assert.equal(typeof result.body.past_count, "number");
+    assert.equal(
+      result.body.upcoming_count + result.body.past_count,
+      result.body.total,
+      "every booking is either upcoming or past",
+    );
+
+    // The list must never leak somebody else's booking.
+    assert.ok(
+      result.body.bookings.every((b: { member_id: string }) =>
+        Boolean(b.member_id),
+      ),
+    );
+    assert.ok(
+      result.body.bookings.every((b: { id: string }) => b.id),
+    );
+
+    const staffToken = await login(STAFF.email, STAFF.password);
+    const denied = await call("/api/bookings/mine", { token: staffToken });
+    assert.equal(denied.status, 403, JSON.stringify(denied.body));
+
+    const badStatus = await call("/api/bookings/mine?status=nonsense", {
+      token: memberToken,
+    });
+    assert.equal(badStatus.status, 400, JSON.stringify(badStatus.body));
+  });
+
+  test("GET /api/bookings/queue reports conflicts and honours filters", async () => {
+    const staffToken = await login(STAFF.email, STAFF.password);
+    const result = await call("/api/bookings/queue", { token: staffToken });
+
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    assert.ok(Array.isArray(result.body.bookings));
+    assert.equal(typeof result.body.total, "number");
+    assert.equal(typeof result.body.conflict_count, "number");
+
+    for (const booking of result.body.bookings) {
+      assert.equal(
+        typeof booking.has_conflict,
+        "boolean",
+        "every queue item carries has_conflict",
+      );
+      assert.ok(booking.resource_id, "every booking resolves to a resource");
+    }
+    assert.ok(
+      result.body.conflict_count <= result.body.total,
+      "conflict_count cannot exceed the filtered set",
+    );
+
+    const rooms = await call("/api/bookings/queue?resource_type=room", {
+      token: staffToken,
+    });
+    assert.equal(rooms.status, 200);
+    for (const booking of rooms.body.bookings)
+      assert.equal(booking.resource_type, "room");
+
+    const badType = await call("/api/bookings/queue?resource_type=garden", {
+      token: staffToken,
+    });
+    assert.equal(badType.status, 400, JSON.stringify(badType.body));
+
+    const memberToken = await login(MEMBER.email, MEMBER.password);
+    const denied = await call("/api/bookings/queue", { token: memberToken });
+    assert.equal(denied.status, 403, JSON.stringify(denied.body));
+  });
+
+  test("an approved booking makes a slot unavailable to a second request", async () => {
+    const room = required(
+      (await call("/api/resources?type=room&page_size=1")).body.resources?.[0],
+      "an active room",
+    );
+    const start = new Date(Date.now() + 200 * 86_400_000).toISOString();
+    const end = new Date(Date.now() + 201 * 86_400_000).toISOString();
+
+    const { data: taken, error } = await supabaseAdmin
+      .from("bookings")
+      .insert({
+        member_id: "22222222-2222-4222-8222-222222222222",
+        facility_id: room.id,
+        start_at: start,
+        end_at: end,
+        status: "approved",
+        purpose: "Approved probe",
+      })
+      .select("id")
+      .single();
+    assert.equal(error, null);
+
+    try {
+      const memberToken = await login(MEMBER.email, MEMBER.password);
+      const clash = await call("/api/bookings", {
+        method: "POST",
+        token: memberToken,
+        body: bookingRequest(room.id, start, end),
+      });
+
+      // The contract names the exact error string clients branch on.
+      assert.equal(clash.status, 409, JSON.stringify(clash.body));
+      assert.equal(clash.body.error, "slot_unavailable");
+    } finally {
+      await supabaseAdmin.from("bookings").delete().eq("id", taken!.id);
+    }
+  });
+
+  test("an unknown resource and a reversed window are rejected", async () => {
+    const memberToken = await login(MEMBER.email, MEMBER.password);
+    const start = new Date(Date.now() + 200 * 86_400_000).toISOString();
+    const end = new Date(Date.now() + 201 * 86_400_000).toISOString();
+
+    const unknown = await call("/api/bookings", {
+      method: "POST",
+      token: memberToken,
+      body: bookingRequest(
+        "44444444-4444-4444-8444-444444444444",
+        start,
+        end,
+      ),
+    });
+    assert.equal(unknown.status, 404, JSON.stringify(unknown.body));
+
+    const reversed = await call("/api/bookings", {
+      method: "POST",
+      token: memberToken,
+      body: bookingRequest(
+        (await call("/api/resources?type=room&page_size=1")).body.resources[0].id,
+        end,
+        start,
+      ),
+    });
+    assert.equal(reversed.status, 400, JSON.stringify(reversed.body));
+  });
+});
+
+describe("GET /api/donations filters", () => {
+  const STAFF = { email: "staff@riverside.example", password: "Password123" };
+
+  test("narrows by status, type, campaign and date, and reports a total", async () => {
+    const marker = `filter-probe-${Date.now()}`;
+    const probe = await createProbeDonation({
+      donor_name: marker,
+      type: "pledge_intent",
+      status: "pending_followup",
+    });
+
+    try {
+      const staffToken = await login(STAFF.email, STAFF.password);
+
+      const all = await call("/api/donations", { token: staffToken });
+      assert.equal(all.status, 200, JSON.stringify(all.body));
+      assert.equal(typeof all.body.total, "number", "the contract requires total");
+      assert.equal(typeof all.body.page, "number");
+      assert.ok(
+        all.body.donations.some((d: { donor_name: string }) => d.donor_name === marker),
+        "an unfiltered list must include the probe",
+      );
+
+      // This is the contract's follow-up queue, which could not work at all
+      // before: the handler ignored every filter it was given.
+      const queue = await call("/api/donations?status=pending_followup", {
+        token: staffToken,
+      });
+      assert.equal(queue.status, 200, JSON.stringify(queue.body));
+      for (const donation of queue.body.donations)
+        assert.equal(donation.status, "pending_followup");
+
+      const typed = await call("/api/donations?type=pledge_intent", {
+        token: staffToken,
+      });
+      for (const donation of typed.body.donations)
+        assert.equal(donation.type, "pledge_intent");
+
+      const byCampaign = await call(
+        `/api/donations?campaign_id=${probe.donation.campaign_id}`,
+        { token: staffToken },
+      );
+      for (const donation of byCampaign.body.donations)
+        assert.equal(donation.campaign_id, probe.donation.campaign_id);
+
+      const byDate = await call(
+        `/api/donations?date_from=${new Date().toISOString()}`,
+        { token: staffToken },
+      );
+      assert.ok(
+        byDate.body.donations.some((d: { donor_name: string }) => d.donor_name === marker),
+        "a probe created now must fall inside today's lower bound",
+      );
+    } finally {
+      await probe.cleanup();
+    }
+  });
+
+  test("date_to covers the whole of a bare date", async () => {
+    const marker = `endofday-probe-${Date.now()}`;
+    const today = new Date().toISOString().slice(0, 10);
+    const probe = await createProbeDonation({ donor_name: marker });
+
+    try {
+      const staffToken = await login(STAFF.email, STAFF.password);
+      // A donation made this afternoon must not be hidden by a midnight bound.
+      const result = await call(
+        `/api/donations?date_from=${today}&date_to=${today}`,
+        { token: staffToken },
+      );
+
+      assert.equal(result.status, 200, JSON.stringify(result.body));
+      assert.ok(
+        result.body.donations.some((d: { donor_name: string }) => d.donor_name === marker),
+        "date_to must be inclusive to the end of the day",
+      );
+    } finally {
+      await probe.cleanup();
+    }
+  });
+
+  test("paginates and reports the total before the page", async () => {
+    const staffToken = await login(STAFF.email, STAFF.password);
+    const first = await call("/api/donations?page=1&page_size=1", {
+      token: staffToken,
+    });
+    const second = await call("/api/donations?page=2&page_size=1", {
+      token: staffToken,
+    });
+
+    assert.equal(first.status, 200);
+    assert.equal(second.status, 200);
+    assert.equal(first.body.donations.length, 1);
+    assert.equal(second.body.donations.length, 1);
+    assert.equal(
+      first.body.total,
+      second.body.total,
+      "total describes the filtered set, not the page",
+    );
+    assert.notEqual(
+      first.body.donations[0].id,
+      second.body.donations[0].id,
+      "the two pages must not overlap",
+    );
+  });
+
+  test("rejects a filter value the column cannot hold", async () => {
+    const staffToken = await login(STAFF.email, STAFF.password);
+
+    for (const query of [
+      "status=made_up",
+      "type=yearly",
+      "campaign_id=not-a-uuid",
+      "date_from=yesterday",
+      "date_from=2030-01-02&date_to=2030-01-01",
+    ]) {
+      const result = await call(`/api/donations?${query}`, { token: staffToken });
+      assert.equal(result.status, 400, `${query} should be rejected`);
+      assert.ok(result.body.error, `${query} must explain itself`);
+    }
+  });
+
+  test("the export takes the same filters and is never paginated", async () => {
+    const marker = `export-filter-probe-${Date.now()}`;
+    const probe = await createProbeDonation({
+      donor_name: marker,
+      status: "followed_up",
+    });
+
+    try {
+      const adminToken = await login(ADMIN.email, ADMIN.password);
+      const csv = await (
+        await fetch(`${baseUrl}/api/donations/export?status=followed_up`, {
+          headers: { Authorization: `Bearer ${adminToken}` },
+        })
+      ).text();
+
+      assert.ok(csv.includes(marker), "a matching donation must be exported");
+
+      const empty = await (
+        await fetch(`${baseUrl}/api/donations/export?status=pending_followup`, {
+          headers: { Authorization: `Bearer ${adminToken}` },
+        })
+      ).text();
+      assert.ok(
+        !empty.includes(marker),
+        "an excluded donation must not reach the export",
+      );
+
+      const rejected = await fetch(
+        `${baseUrl}/api/donations/export?status=made_up`,
+        { headers: { Authorization: `Bearer ${adminToken}` } },
+      );
+      assert.equal(rejected.status, 400);
+    } finally {
+      await probe.cleanup();
+    }
+  });
+});
+
+describe("campaign progress and the retired routes", () => {
+  const STAFF = { email: "staff@riverside.example", password: "Password123" };
+
+  test("campaigns carry a whole-percentage progress_pct, or null without a goal", async () => {
+    const marker = `progress-probe-${Date.now()}`;
+    // Every campaign this test creates is listed here, not deleted where it was
+    // made: a failed assertion between the insert and the delete would strand
+    // the row in the live database.
+    const created: string[] = [];
+
+    const goal = required(
+      (
+        await supabaseAdmin
+          .from("campaigns")
+          .insert({
+            title: marker,
+            description: "Progress probe",
+            goal_amount: 200,
+            active: true,
+          })
+          .select("id")
+          .single()
+      ).data,
+      "a campaign with a goal",
+    );
+    created.push(goal.id);
+
+    const noGoal = required(
+      (
+        await supabaseAdmin
+          .from("campaigns")
+          .insert({ title: `${marker}-nogoal`, description: "No goal", active: true })
+          .select("id")
+          .single()
+      ).data,
+      "a campaign with no goal",
+    );
+    created.push(noGoal.id);
+
+    try {
+      // 100 raised against a 200 goal, plus a trigger-driven 300 of donations.
+      await supabaseAdmin.from("donations").insert([
+        { campaign_id: goal.id, amount: 50, type: "one_off", status: "paid", donor_name: marker, receipt_opt_in: false },
+        { campaign_id: goal.id, amount: 50, type: "one_off", status: "paid", donor_name: marker, receipt_opt_in: false },
+      ]);
+
+      const list = await call("/api/campaigns");
+      assert.equal(list.status, 200, JSON.stringify(list.body));
+
+      const listed = list.body.campaigns.find((c: { id: string }) => c.id === goal.id);
+      assert.ok(listed, "the probe campaign must be listed");
+      assert.equal(
+        Number.isInteger(listed.progress_pct),
+        true,
+        "progress must be a whole percentage",
+      );
+      assert.equal(
+        listed.progress_pct,
+        50,
+        `100 of 200 is 50%, got ${listed.progress_pct}`,
+      );
+
+      const noGoalListed = list.body.campaigns.find(
+        (c: { id: string }) => c.id === noGoal.id,
+      );
+      assert.equal(
+        noGoalListed.progress_pct,
+        null,
+        "a campaign with no goal reports null, not 0",
+      );
+
+      // Overfunded is not clamped: 100 raised against a 20 goal is 500%, and a
+      // fundraiser needs to see that rather than have it flattened to 100.
+      const small = required(
+        (
+          await supabaseAdmin
+            .from("campaigns")
+            .insert({ title: `${marker}-small`, description: "Overfunded", goal_amount: 20, active: true })
+            .select("id")
+            .single()
+        ).data,
+        "a campaign with a small goal",
+      );
+      created.push(small.id);
+
+      await supabaseAdmin.from("donations").insert([
+        { campaign_id: small.id, amount: 50, type: "one_off", status: "paid", donor_name: marker, receipt_opt_in: false },
+        { campaign_id: small.id, amount: 50, type: "one_off", status: "paid", donor_name: marker, receipt_opt_in: false },
+      ]);
+
+      const overfunded = await call(`/api/campaigns/${small.id}`);
+      assert.equal(overfunded.status, 200, JSON.stringify(overfunded.body));
+      assert.equal(
+        overfunded.body.progress_pct,
+        500,
+        "progress past the goal must not be clamped to 100",
+      );
+
+    } finally {
+      await supabaseAdmin.from("donations").delete().eq("donor_name", marker);
+      for (const id of created)
+        await supabaseAdmin.from("campaigns").delete().eq("id", id);
+    }
+  });
+
+  test("list and detail agree on progress_pct, and detail 404s on an unknown id", async () => {
+    const campaign = required(
+      (await supabaseAdmin.from("campaigns").select("id").eq("active", true).limit(1).single()).data,
+      "an active campaign",
+    );
+
+    const list = await call("/api/campaigns");
+    const listed = list.body.campaigns.find((c: { id: string }) => c.id === campaign.id);
+    const detail = await call(`/api/campaigns/${campaign.id}`);
+
+    assert.equal(detail.status, 200, JSON.stringify(detail.body));
+    assert.equal(
+      detail.body.progress_pct,
+      listed.progress_pct,
+      "one shaper serves both, so the two must not disagree",
+    );
+
+    // Public: no token sent here.
+    const unknown = await call("/api/campaigns/44444444-4444-4444-8444-444444444444");
+    assert.equal(unknown.status, 404, JSON.stringify(unknown.body));
+  });
+
+  test("the retired member routes are gone", async () => {
+    const adminToken = await login(ADMIN.email, ADMIN.password);
+    const staffToken = await login(STAFF.email, STAFF.password);
+
+    const create = await call("/api/members", {
+      method: "POST",
+      token: adminToken,
+      body: { email: "nobody@riverside.example", password: "Password123", full_name: "Nobody" },
+    });
+    assert.equal(create.status, 404, JSON.stringify(create.body));
+
+    const renewal = await call("/api/members/11111111-1111-4111-8111-111111111111/renewal", {
+      method: "PATCH",
+      token: adminToken,
+    });
+    assert.equal(renewal.status, 404, JSON.stringify(renewal.body));
+  });
+
+  test("GET /api/members/:id summarises booking history", async () => {
+    const staffToken = await login(STAFF.email, STAFF.password);
+    // Aisha owns a seeded pending booking; Nandi owns a rejected one.
+    const result = await call("/api/members/11111111-1111-4111-8111-111111111111", {
+      token: staffToken,
+    });
+
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    assert.ok(result.body.full_name, "the profile fields are still returned");
+
+    const history = result.body.booking_history;
+    assert.ok(history, "the contract requires a booking history summary");
+    assert.equal(typeof history.total, "number");
+    assert.equal(typeof history.upcoming_count, "number");
+    assert.equal(typeof history.past_count, "number");
+
+    assert.equal(
+      history.upcoming_count + history.past_count,
+      history.total,
+      "upcoming and past must partition the total",
+    );
+    assert.equal(
+      history.by_status.reduce((sum: number, b: { count: number }) => sum + b.count, 0),
+      history.total,
+      "the status breakdown must add up to the total",
+    );
+    assert.deepEqual(
+      history.by_status.map((b: { status: string }) => b.status),
+      ["pending", "approved", "rejected", "cancelled"],
+      "all four statuses are reported, zeros included",
+    );
+
+    const memberToken = await login("aisha@riverside.example", "Password123");
+    const denied = await call("/api/members/11111111-1111-4111-8111-111111111111", {
+      token: memberToken,
+    });
+    assert.equal(denied.status, 403, JSON.stringify(denied.body));
   });
 });

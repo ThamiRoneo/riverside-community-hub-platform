@@ -52,12 +52,14 @@ export async function apiGet<T>(path: string): Promise<T> {
 export async function apiPost<T>(
   path: string,
   payload: Record<string, unknown>,
+  extraHeaders: Record<string, string> = {},
 ): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       ...(await authHeaders()),
+      ...extraHeaders,
     },
     body: JSON.stringify(payload),
   });

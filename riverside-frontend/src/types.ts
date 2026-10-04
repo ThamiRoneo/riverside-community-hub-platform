@@ -56,19 +56,17 @@ export interface ProgrammeRecord {
   image_url: string | null;
 }
 
-export interface FacilityRecord {
+/** Rooms and equipment share one catalogue endpoint, so one record covers both. */
+export type ResourceType = "room" | "equipment";
+
+export interface ResourceRecord {
   id: string;
   name: string;
+  type: ResourceType;
   description: string | null;
   capacity: number | null;
-  hourly_rate: number;
-}
-
-export interface EquipmentRecord {
-  id: string;
-  name: string;
-  description: string | null;
-  quantity: number;
+  /** Rooms are charged hourly; equipment has no rate. */
+  hourly_rate: number | null;
 }
 
 export interface CampaignRecord {
@@ -77,26 +75,39 @@ export interface CampaignRecord {
   description: string | null;
   goal_amount: number | null;
   current_amount: number;
+  /** Whole percentage, or null when the campaign has no goal set. */
+  progress_pct: number | null;
 }
 
 export interface BookingRecord {
   id: string;
   member_id: string;
-  facility_id: string | null;
-  equipment_id: string | null;
+  resource_id: string | null;
+  resource_type: ResourceType | null;
+  resource_name: string | null;
+  member_name: string | null;
+  purpose: string | null;
+  contact_phone: string | null;
+  people_count: number | null;
   start_at: string;
   end_at: string;
   status: "pending" | "approved" | "rejected" | "cancelled";
   staff_note?: string | null;
-  profiles?: { full_name?: string; email?: string } | null;
-  facilities?: { name?: string } | null;
-  equipment?: { name?: string } | null;
+  /** Only the staff queue reports a clash with an already-approved booking. */
+  has_conflict?: boolean;
 }
 
 export interface ReportRecord {
   bookings_this_month: number;
-  total_donations: number;
+  bookings_delta_pct: number;
+  donations_total: number;
+  donations_delta_pct: number;
   active_members: number;
+  active_members_delta: number;
+  pending_requests: number;
+  conflict_count: number;
+  bookings_by_status: { status: string; count: number }[];
+  donations_over_time: { date: string; total: number; count: number }[];
   generated_at: string;
 }
 
@@ -155,4 +166,18 @@ export interface NotificationRecord {
   message: string;
   read: boolean;
   created_at: string;
+}
+
+// GET /api/staff is admin-only and returns {staff: [...]}. `active` is carried
+// alongside the contract's four fields so an admin who has just deactivated
+// somebody can see that in the list; an extra field leaves the documented
+// shape valid.
+export type StaffRole = Extract<Role, "staff" | "admin">;
+
+export interface StaffRecord {
+  id: string;
+  full_name: string;
+  role: StaffRole;
+  joined_at: string;
+  active: boolean;
 }
