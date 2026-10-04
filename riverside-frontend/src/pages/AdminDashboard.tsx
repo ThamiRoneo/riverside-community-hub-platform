@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
+import CampaignManagement from "../components/CampaignManagement";
 import ProgrammeManagement from "../components/ProgrammeManagement";
 import StaffManagement from "../components/StaffManagement";
 import {
@@ -8,7 +9,6 @@ import {
   reauthenticate,
 } from "../lib/api";
 import type {
-  CampaignRecord,
   DonationRecord,
   MemberRecord,
   ReportRecord,
@@ -18,7 +18,6 @@ import type {
 export default function AdminDashboard() {
   const [report, setReport] = useState<ReportRecord | null>(null);
   const [members, setMembers] = useState<MemberRecord[]>([]);
-  const [campaigns, setCampaigns] = useState<CampaignRecord[]>([]);
   const [donations, setDonations] = useState<DonationRecord[]>([]);
   const [followUpNote, setFollowUpNote] = useState<Record<string, string>>({});
   const [actionMessage, setActionMessage] = useState("");
@@ -39,7 +38,6 @@ export default function AdminDashboard() {
     Promise.all([
       apiGet<ReportRecord>("/reports/summary"),
       apiGet<{ members: MemberRecord[] }>("/members"),
-      apiGet<{ campaigns: CampaignRecord[] }>("/campaigns"),
       // The list endpoint is paginated, and this table renders every donation
       // it is given, so ask for the server's maximum explicitly. Without it the
       // default page size would silently truncate the table at ten rows.
@@ -49,12 +47,10 @@ export default function AdminDashboard() {
         ([
           reportResponse,
           memberResponse,
-          campaignResponse,
           donationResponse,
         ]) => {
           setReport(reportResponse);
           setMembers(memberResponse.members);
-          setCampaigns(campaignResponse.campaigns);
           setDonations(donationResponse.donations);
           setStatus("ready");
         },
@@ -278,13 +274,7 @@ export default function AdminDashboard() {
           <li>Generate reports</li>
         </ul>
         <ProgrammeManagement />
-        <h3>Active campaigns</h3>
-        {campaigns.length === 0 ? <p>No active campaigns.</p> : null}
-        <ul>
-          {campaigns.map((campaign) => (
-            <li key={campaign.id}>{campaign.title}</li>
-          ))}
-        </ul>
+        <CampaignManagement />
         <h3>Recent members</h3>
         <p>
           Members join by signing up themselves. Staff and admin accounts are
