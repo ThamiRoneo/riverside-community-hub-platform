@@ -4,6 +4,7 @@ import ProgrammeManagement from "../components/ProgrammeManagement";
 import StaffManagement from "../components/StaffManagement";
 import {
   apiDownload,
+  saveBlob,
   apiGet,
   apiPatch,
   reauthenticate,
@@ -183,16 +184,31 @@ export default function AdminDashboard() {
     }
   }
 
+  // The contract says the report export takes the same filters as the summary,
+  // and the summary this page renders is always the default month, so the export
+  // is that window too rather than a separate one the page never shows.
+  async function exportReport() {
+    setActionMessage("");
+    try {
+      const { blob, filename } = await apiDownload(
+        "/reports/export?date_range=month",
+      );
+      saveBlob(blob, filename ?? "report.csv");
+      setActionMessage(`Report export downloaded as ${filename ?? "report.csv"}.`);
+    } catch (error) {
+      setActionMessage(
+        error instanceof Error ? error.message : "Unable to export the report",
+      );
+    }
+  }
+
   async function exportDonations() {
     try {
-      const blob = await apiDownload("/donations/export");
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = "donations.csv";
-      link.click();
-      URL.revokeObjectURL(url);
-      setActionMessage("Donation export downloaded.");
+      const { blob, filename } = await apiDownload("/donations/export");
+      saveBlob(blob, filename ?? "donations.csv");
+      setActionMessage(
+        `Donation export downloaded as ${filename ?? "donations.csv"}.`,
+      );
     } catch (error) {
       setActionMessage(
         error instanceof Error ? error.message : "Unable to export donations",
@@ -256,6 +272,11 @@ export default function AdminDashboard() {
             <p>Booking conflicts</p>
             <h2>{report?.conflict_count ?? 0}</h2>
           </div>
+        </div>
+        <div style={{ marginTop: "1rem" }}>
+          <button type="button" onClick={exportReport}>
+            Export this report as CSV
+          </button>
         </div>
       </section>
 
