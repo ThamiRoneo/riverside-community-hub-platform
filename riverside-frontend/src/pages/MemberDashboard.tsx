@@ -1,12 +1,24 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useAuth } from "../context/AuthContext";
 import { apiGet, apiPost, apiPatch } from "../lib/api";
 import type {
+  AvailabilitySlot,
   BookingRecord,
   MemberProfileRecord,
   NotificationRecord,
   ResourceRecord,
 } from "../types";
+
+/**
+ * Reads an availability label as the wall-clock hour it names.
+ *
+ * "2026-10-06T10:00:00.000Z" is 10:00 on the hub's clock, not 10:00 UTC, so the
+ * Z is dropped before parsing. Parsing it as UTC would shift every slot by the
+ * reader's offset and quietly break the comparison.
+ */
+function slotHour(label: string): number {
+  return new Date(label.replace(/Z$/, "")).getTime();
+}
 
 export default function MemberDashboard() {
   const { user } = useAuth();
@@ -27,6 +39,55 @@ export default function MemberDashboard() {
     "loading",
   );
   const [message, setMessage] = useState("");
+  const [slots, setSlots] = useState<AvailabilitySlot[] | null>(null);
+
+  // Availability is advisory, not a gate. It is fetched whenever the chosen
+  // resource or start changes, and a failed fetch leaves it unknown rather than
+  // blocking the form, because the backend refuses a clashing booking with a
+  // 409 either way.
+  useEffect(() => {
+    if (!resourceId || !startAt) {
+      setSlots(null);
+      return;
+    }
+    const date = startAt.slice(0, 10);
+    let stale = false;
+    apiGet<{ slots: AvailabilitySlot[] }>(
+      `/resources/${resourceId}/availability?date=${date}`,
+    )
+      .then((response) => {
+        if (!stale) setSlots(response.slots);
+      })
+      .catch(() => {
+        if (!stale) setSlots(null);
+      });
+    return () => {
+      stale = true;
+    };
+  }, [resourceId, startAt]);
+
+  // A clash is when any hour the request touches is already taken.
+  //
+  // Compared on the wall-clock label rather than as instants. The availability
+  // endpoint stamps its opening-hour grid with a Z, but those labels are
+  // wall-clock hours: a browser reading them as UTC puts every slot as many
+  // hours off as its own offset, so a member in Johannesburg asking for 10:00
+  // would be compared against 08:00 and the overlap would never be seen. What
+  // the member typed is an hour on a wall clock, so compare it to the label the
+  // same way.
+  //
+  // Hours outside the hub's opening times are not in the returned slots at all,
+  // so they are neither available nor a clash.
+  const clashes = useMemo(() => {
+    if (!slots || !startAt || !endAt) return false;
+    const startHour = new Date(startAt).getTime();
+    const endHour = new Date(endAt).getTime();
+    if (Number.isNaN(startHour) || Number.isNaN(endHour)) return false;
+    return slots.some((slot) => {
+      if (slot.status !== "unavailable") return false;
+      return slotHour(slot.start_time) < endHour && startHour < slotHour(slot.end_time);
+    });
+  }, [slots, startAt, endAt]);
 
   // One catalogue, split only so the picker can group its options.
   const rooms = resources.filter((resource) => resource.type === "room");
@@ -227,6 +288,7 @@ export default function MemberDashboard() {
         >
           <select
             required
+            aria-label="Choose a room or equipment"
             value={resourceId}
             onChange={(event) => setResourceId(event.target.value)}
           >
@@ -292,6 +354,12 @@ export default function MemberDashboard() {
               rows={2}
             />
           </label>
+          {clashes ? (
+            <p role="alert" style={{ color: "#b91c1c", fontWeight: 700 }}>
+              Some of that time is already booked. Choose another slot, or send
+              the request anyway and staff will decide.
+            </p>
+          ) : null}
           <button
             type="submit"
             style={{

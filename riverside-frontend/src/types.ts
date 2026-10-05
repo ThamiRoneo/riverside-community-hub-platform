@@ -181,3 +181,13 @@ export interface StaffRecord {
   joined_at: string;
   active: boolean;
 }
+
+// GET /api/resources/:id/availability returns the hub's opening hours as hourly
+// slots for one date. Only an approved booking makes a slot unavailable; a
+// pending request does not, which is why two members may request one slot and
+// the loser is rejected at approval rather than at request time.
+export interface AvailabilitySlot {
+  start_time: string;
+  end_time: string;
+  status: "available" | "unavailable";
+}
