@@ -88,24 +88,44 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.removeItem(STORAGE_KEY);
   }, [user]);
 
-  const fetchProfile = useCallback(async () => {
-    if (!user) return;
-    try {
-      // Own profile comes from /profile/me. There is no /members/me: that path
-      // falls through to the staff-and-admin-only GET /members/:id, so every
-      // member got a 403 and the failure below was swallowed.
-      const profile = await apiGet<MemberProfileRecord>("/profile/me");
-      setUser(prev => (prev ? { ...prev, fullName: profile.full_name } : prev));
-    } catch (err) {
-      console.error("Failed to fetch profile", err);
-    }
-  }, [user]);
+  // Refreshes the display name from the profile of whoever is signed in.
+  //
+  // Two things here keep this from looping. The effect is keyed on the id, not
+  // the user object, and the set below keeps the same reference when the name has
+  // not actually changed. Without the second guard this fired once a second
+  // forever: a new `user` object recreated the callback, which re-ran the effect,
+  // which set a new object again. The previous `/members/me` call hid it, because
+  // it always failed for a member and so never reached the set.
+  const userId = user?.id ?? null;
 
   useEffect(() => {
-    if (user) {
-      fetchProfile();
+    if (!userId) return;
+    let cancelled = false;
+
+    async function loadProfile() {
+      try {
+        // Own profile comes from /profile/me. There is no /members/me: that path
+        // falls through to the staff-and-admin-only GET /members/:id, so every
+        // member got a 403.
+        const profile = await apiGet<MemberProfileRecord>("/profile/me");
+        if (cancelled) return;
+        setUser(prev =>
+          prev && prev.fullName === profile.full_name
+            ? prev
+            : prev && { ...prev, fullName: profile.full_name },
+        );
+      } catch (err) {
+        // Logged rather than swallowed: a stale name here is the only symptom of
+        // a broken profile fetch, which is how this went unnoticed.
+        console.error("Failed to fetch profile", err);
+      }
     }
-  }, [user, fetchProfile]);
+
+    void loadProfile();
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
   
   const login = useCallback(async (email: string, password: string) => {
     const response = await apiPost<AuthResponse>("/auth/login", {
