@@ -6,12 +6,9 @@ export interface AuthedUser {
   role: Role;
 }
 
-// Extends Express's Request type with auth context
-declare global {
-  namespace Express {
-    interface Request {
-      user?: AuthedUser;
-      accessToken?: string;
-    }
+declare module "express-serve-static-core" {
+  interface Request {
+    user?: AuthedUser;
+    accessToken?: string;
   }
 }
