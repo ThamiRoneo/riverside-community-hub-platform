@@ -1,7 +1,6 @@
 import { Router } from "express";
 import { supabaseAdmin, supabasePublic } from "../config/supabase";
 import { requireAuth } from "../middleware/auth";
-import { requireRole } from "../middleware/roles";
 import { issueReauthToken, REAUTH_TTL_MS } from "../middleware/reauth";
 import {
   SignupSchema,

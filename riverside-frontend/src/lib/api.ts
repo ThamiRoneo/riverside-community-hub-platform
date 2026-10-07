@@ -97,13 +97,41 @@ export async function apiDelete(path: string): Promise<void> {
   if (!response.ok) throw await apiError(response);
 }
 
-export async function apiDownload(path: string): Promise<Blob> {
+/**
+ * Downloads a file and returns the blob with the filename the server chose.
+ *
+ * The filename comes back alongside the body because setting `link.download`
+ * from the call site would override it: the export endpoints name their file
+ * with the window and the date, so two downloads on the same day do not collide.
+ */
+export async function apiDownload(path: string): Promise<{
+  blob: Blob;
+  filename: string | null;
+}> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     headers: await authHeaders(),
   });
 
   if (!response.ok) throw await apiError(response);
-  return response.blob();
+
+  const disposition = response.headers.get("content-disposition") ?? "";
+  // The server sends: attachment; filename=report-month-2026-10-01.csv
+  const match = /filename="?([^";]+)"?/.exec(disposition);
+
+  return {
+    blob: await response.blob(),
+    filename: match ? match[1] : null,
+  };
+}
+
+/** Saves a downloaded file under the name the server chose. */
+export function saveBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
 }
 
 async function authHeaders(): Promise<Record<string, string>> {

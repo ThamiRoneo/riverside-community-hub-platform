@@ -7,6 +7,7 @@ export default defineConfig({
   server: { port: 5173 },
   test: {
     environment: "jsdom",
+    environmentOptions: { jsdom: { url: "http://localhost:5173" } },
     setupFiles: ["./src/test/setup.ts"],
     // Component tests live beside the component they cover.
     include: ["src/**/*.test.{ts,tsx}"],
