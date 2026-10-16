@@ -33,9 +33,6 @@ export default function DonatePage() {
   if (!campaign) return <p>No active donation campaign is available.</p>;
   const activeCampaign = campaign;
 
-  // The server derives progress_pct so the list, the detail endpoint and this
-  // page cannot disagree. Recomputing it here is what made the bar clamp at 100
-  // and hide an overfunded campaign.
   const progress = campaign.progress_pct;
   const hasGoal = campaign.goal_amount !== null && progress !== null;
   const goalReached = hasGoal && progress >= 100;
@@ -62,26 +59,15 @@ export default function DonatePage() {
   }
 
   return (
-    <div
-      style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "2rem" }}
-    >
-      <section
-        style={{
-          background: "white",
-          borderRadius: 20,
-          padding: "1.5rem",
-          boxShadow: "0 8px 20px rgba(0,0,0,0.04)",
-        }}
-      >
-        <h1>Support the campaign</h1>
-        <p>{campaign.description ?? "Support Riverside Community Hub."}</p>
-        <div style={{ marginBottom: "1rem" }}>
-          <strong>R{campaign.current_amount.toLocaleString()}</strong> raised so
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+      <section className="bg-white rounded-2xl p-6 shadow-sm">
+        <h1 className="text-2xl font-bold mb-4">Support the campaign</h1>
+        <p className="text-gray-700 mb-4">{campaign.description ?? "Support Riverside Community Hub."}</p>
+        <div className="mb-4">
+          <strong className="text-xl">R{campaign.current_amount.toLocaleString()}</strong> raised so
           far
           {hasGoal ? (
             <>
-              {/* The visual bar is decorative; the sentence below is what a
-                  screen reader and a colour-blind reader both rely on. */}
               <div
                 role="progressbar"
                 aria-valuenow={progress}
@@ -89,89 +75,54 @@ export default function DonatePage() {
                 aria-valuemax={100}
                 aria-valuetext={`${progress}% of the R${campaign.goal_amount?.toLocaleString()} goal`}
                 aria-label={`Progress toward the R${campaign.goal_amount?.toLocaleString()} goal`}
-                style={{
-                  height: 12,
-                  borderRadius: 999,
-                  background: "#e5e7eb",
-                  overflow: "hidden",
-                  marginTop: "0.75rem",
-                }}
+                className="h-3 rounded-full bg-gray-200 overflow-hidden mt-3"
               >
                 <div
-                  style={{
-                    width: `${Math.min(progress, 100)}%`,
-                    height: "100%",
-                    background: goalReached ? "#16a34a" : "#22c55e",
-                  }}
+                  className={`h-full transition-all ${goalReached ? "bg-green-600" : "bg-green-500"}`}
+                  style={{ width: `${Math.min(progress, 100)}%` }}
                 />
               </div>
-              <p style={{ marginTop: "0.5rem" }}>
+              <p className="mt-2 text-sm text-gray-700">
                 {goalReached
                   ? `Goal reached — R${campaign.current_amount.toLocaleString()} raised against a R${campaign.goal_amount?.toLocaleString()} goal.`
                   : `${progress}% of the R${campaign.goal_amount?.toLocaleString()} goal.`}
               </p>
             </>
           ) : (
-            <p style={{ marginTop: "0.5rem" }}>
+            <p className="mt-2 text-sm text-gray-700">
               This campaign has no funding goal set.
             </p>
           )}
         </div>
 
-        <label
-          style={{ display: "block", marginBottom: "0.5rem", fontWeight: 700 }}
-        >
+        <label className="block mb-2 font-bold">
           Donation amount
         </label>
         <input
           type="number"
           value={amount}
           onChange={(event) => setAmount(Number(event.target.value))}
-          style={{
-            width: "100%",
-            padding: "0.8rem",
-            borderRadius: 10,
-            border: "1px solid #cbd5e1",
-            marginBottom: "1rem",
-          }}
+          className="w-full px-3 py-2 border border-gray-300 rounded-lg mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
 
-        <div
-          style={{
-            display: "flex",
-            gap: "0.75rem",
-            marginBottom: "1rem",
-            flexWrap: "wrap",
-          }}
-        >
+        <div className="flex flex-wrap gap-3 mb-4">
           {[50, 100, 250, 500].map((value) => (
             <button
               key={value}
               type="button"
               onClick={() => setAmount(value)}
-              style={{
-                background: amount === value ? "#1d3557" : "#e2e8f0",
-                color: amount === value ? "white" : "#0f172a",
-                border: "none",
-                borderRadius: 999,
-                padding: "0.6rem 1rem",
-                fontWeight: 700,
-                cursor: "pointer",
-              }}
+              className={`border-none rounded-full px-4 py-2 font-bold transition-colors ${
+                amount === value
+                  ? "bg-blue-900 text-white"
+                  : "bg-gray-200 text-gray-900 hover:bg-gray-300"
+              }`}
             >
               R{value}
             </button>
           ))}
         </div>
 
-        <label
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "0.5rem",
-            marginBottom: "1rem",
-          }}
-        >
+        <label className="flex items-center gap-2 mb-4">
           <input
             type="checkbox"
             checked={receiptOptIn}
@@ -181,64 +132,39 @@ export default function DonatePage() {
         </label>
       </section>
 
-      <section
-        style={{
-          background: "white",
-          borderRadius: 20,
-          padding: "1.5rem",
-          boxShadow: "0 8px 20px rgba(0,0,0,0.04)",
-        }}
-      >
-        <h2>Donor details</h2>
-        <form onSubmit={handleSubmit} style={{ display: "grid", gap: "1rem" }}>
+      <section className="bg-white rounded-2xl p-6 shadow-sm">
+        <h2 className="text-xl font-bold mb-4">Donor details</h2>
+        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
           <input
             placeholder="Full name"
             value={donorName}
             onChange={(event) => setDonorName(event.target.value)}
-            style={{
-              padding: "0.8rem",
-              borderRadius: 10,
-              border: "1px solid #cbd5e1",
-            }}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
           <input
             placeholder="Email address"
             type="email"
             value={donorEmail}
             onChange={(event) => setDonorEmail(event.target.value)}
-            style={{
-              padding: "0.8rem",
-              borderRadius: 10,
-              border: "1px solid #cbd5e1",
-            }}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
           <input
             placeholder="Phone number"
             value={donorPhone}
             onChange={(event) => setDonorPhone(event.target.value)}
-            style={{
-              padding: "0.8rem",
-              borderRadius: 10,
-              border: "1px solid #cbd5e1",
-            }}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
           <select
             value={donationType}
             onChange={(event) =>
               setDonationType(event.target.value as DonationType)
             }
-            style={{
-              padding: "0.8rem",
-              borderRadius: 10,
-              border: "1px solid #cbd5e1",
-            }}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
           >
             <option value="one_off">One-off donation</option>
             <option value="pledge_intent">Adopt a parcel pledge</option>
           </select>
-          <label
-            style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}
-          >
+          <label className="flex items-center gap-2">
             <input
               type="checkbox"
               checked={anonymous}
@@ -247,23 +173,15 @@ export default function DonatePage() {
             Make this donation anonymous
           </label>
           {submitStatus === "error" ? (
-            <p role="alert">Unable to submit donation. Please try again.</p>
+            <p role="alert" className="text-red-600">Unable to submit donation. Please try again.</p>
           ) : null}
           {submitStatus === "success" ? (
-            <p role="status">Thank you. Your donation has been recorded.</p>
+            <p role="status" className="text-green-600">Thank you. Your donation has been recorded.</p>
           ) : null}
           <button
             type="submit"
             disabled={submitStatus === "submitting"}
-            style={{
-              background: "#22c55e",
-              color: "white",
-              border: "none",
-              borderRadius: 10,
-              padding: "0.9rem 1.2rem",
-              fontWeight: 800,
-              cursor: "pointer",
-            }}
+            className="bg-green-500 text-white rounded-lg py-3 font-bold hover:bg-green-600 transition-colors disabled:opacity-50"
           >
             {submitStatus === "submitting"
               ? "Submitting..."
