@@ -29,84 +29,38 @@ export default function HomePage() {
 
   return (
     <div>
-      <section
-        style={{
-          display: "grid",
-          gridTemplateColumns: "1.2fr 0.8fr",
-          gap: "2rem",
-          alignItems: "center",
-          background: "linear-gradient(135deg, #e0f2fe, #fef3c7)",
-          borderRadius: 24,
-          padding: "2rem",
-          marginBottom: "2rem",
-        }}
-      >
+      <section className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-center bg-gradient-to-br from-blue-50 to-yellow-50 rounded-3xl p-6 sm:p-8 mb-8">
         <div>
-          <p
-            style={{
-              textTransform: "uppercase",
-              letterSpacing: "0.12em",
-              color: "#1d4ed8",
-              fontWeight: 700,
-            }}
-          >
+          <p className="uppercase tracking-widest text-blue-700 font-bold text-sm">
             Community support
           </p>
-          <h1 style={{ fontSize: "3rem", margin: "0.5rem 0 1rem" }}>
+          <h1 className="text-3xl sm:text-4xl lg:text-5xl font-bold mt-2 mb-4">
             A hub for learning, connection, and care.
           </h1>
-          <p style={{ fontSize: "1.1rem", lineHeight: 1.6, maxWidth: 620 }}>
+          <p className="text-lg leading-relaxed max-w-xl text-gray-700">
             Riverside Community Hub connects members, volunteers, and staff
             through youth programmes, shared resources, and compassionate local
             action.
           </p>
 
-          <div
-            style={{
-              display: "flex",
-              gap: "1rem",
-              marginTop: "1.5rem",
-              flexWrap: "wrap",
-            }}
-          >
+          <div className="flex flex-wrap gap-4 mt-6">
             <Link
               to="/donate"
-              style={{
-                background: "#1d3557",
-                color: "white",
-                padding: "0.9rem 1.3rem",
-                borderRadius: 10,
-                textDecoration: "none",
-                fontWeight: 700,
-              }}
+              className="bg-blue-900 text-white px-6 py-3 rounded-lg font-bold hover:bg-blue-800 transition-colors"
             >
               Donate now
             </Link>
             <Link
               to="/programmes"
-              style={{
-                background: "white",
-                color: "#1d3557",
-                padding: "0.9rem 1.3rem",
-                borderRadius: 10,
-                textDecoration: "none",
-                fontWeight: 700,
-              }}
+              className="bg-white text-blue-900 px-6 py-3 rounded-lg font-bold hover:bg-gray-100 transition-colors"
             >
               Explore programmes
             </Link>
           </div>
         </div>
 
-        <div
-          style={{
-            background: "white",
-            padding: "1.5rem",
-            borderRadius: 20,
-            boxShadow: "0 10px 30px rgba(0,0,0,0.06)",
-          }}
-        >
-          <h3 style={{ marginTop: 0 }}>Current campaign</h3>
+        <div className="bg-white p-6 rounded-2xl shadow-md">
+          <h3 className="font-bold text-xl mb-2">Current campaign</h3>
           {status === "loading" ? <p>Loading campaign...</p> : null}
           {status === "error" ? (
             <p role="alert">Unable to load campaign data.</p>
@@ -116,44 +70,20 @@ export default function HomePage() {
           ) : null}
           {campaign ? (
             <>
-              <p
-                style={{
-                  fontSize: "1.8rem",
-                  fontWeight: 800,
-                  margin: "0.25rem 0",
-                }}
-              >
+              <p className="text-3xl font-extrabold mt-1 mb-1">
                 R{campaign.current_amount.toLocaleString()}
               </p>
-              <p>
+              <p className="text-gray-700">
                 Raised so far of R
                 {campaign.goal_amount?.toLocaleString() ?? "the campaign goal"}
               </p>
-              <div
-                style={{
-                  height: 12,
-                  borderRadius: 999,
-                  background: "#e5e7eb",
-                  overflow: "hidden",
-                  margin: "1rem 0",
-                }}
-              >
+              <div className="h-3 rounded-full bg-gray-200 overflow-hidden mt-4 mb-2">
                 <div
-                  style={{
-                    width: `${progress}%`,
-                    height: "100%",
-                    background: "#22c55e",
-                  }}
+                  className="h-full bg-green-500 transition-all"
+                  style={{ width: `${progress}%` }}
                 />
               </div>
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  fontSize: "0.9rem",
-                  color: "#475569",
-                }}
-              >
+              <div className="flex justify-between text-sm text-gray-600">
                 <span>{Math.round(progress)}% funded</span>
                 <span>
                   Goal: R{campaign.goal_amount?.toLocaleString() ?? "TBC"}
@@ -164,44 +94,22 @@ export default function HomePage() {
         </div>
       </section>
 
-      <section style={{ marginTop: "2.5rem" }}>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            marginBottom: "1rem",
-          }}
-        >
-          <h2 style={{ margin: 0 }}>Featured programmes</h2>
+      <section className="mt-10">
+        <div className="flex justify-between items-center mb-4">
+          <h2 className="text-2xl font-bold">Featured programmes</h2>
           <Link
             to="/programmes"
-            style={{
-              color: "#1d4ed8",
-              fontWeight: 700,
-              textDecoration: "none",
-            }}
+            className="text-blue-700 font-bold hover:underline"
           >
             View all
           </Link>
         </div>
 
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))",
-            gap: "1.5rem",
-          }}
-        >
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {programmes.map((programme) => (
             <article
               key={programme.id}
-              style={{
-                background: "white",
-                borderRadius: 16,
-                overflow: "hidden",
-                boxShadow: "0 8px 20px rgba(0,0,0,0.04)",
-              }}
+              className="bg-white rounded-xl overflow-hidden shadow-sm"
             >
               <img
                 src={
@@ -209,23 +117,17 @@ export default function HomePage() {
                   "https://images.unsplash.com/photo-1522202176988-66273c2fd55f?auto=format&fit=crop&w=900&q=80"
                 }
                 alt={programme.title}
-                style={{ width: "100%", height: 180, objectFit: "cover" }}
+                className="w-full h-48 object-cover"
               />
-              <div style={{ padding: "1rem" }}>
-                <p style={{ color: "#1d4ed8", fontWeight: 700 }}>
+              <div className="p-4">
+                <p className="text-blue-700 font-bold text-sm">
                   {programme.age_range ?? "All ages"}
                 </p>
-                <h3 style={{ margin: "0.4rem 0" }}>{programme.title}</h3>
-                <p style={{ color: "#475569", minHeight: 80 }}>
+                <h3 className="font-bold text-lg mt-1 mb-1">{programme.title}</h3>
+                <p className="text-gray-700 min-h-[60px] text-sm leading-relaxed">
                   {programme.description}
                 </p>
-                <small
-                  style={{
-                    display: "block",
-                    marginTop: "0.5rem",
-                    color: "#334155",
-                  }}
-                >
+                <small className="block mt-2 text-gray-600 text-sm">
                   {programme.schedule_info ?? "Schedule to be confirmed"}
                 </small>
               </div>
@@ -236,3 +138,4 @@ export default function HomePage() {
     </div>
   );
 }
+

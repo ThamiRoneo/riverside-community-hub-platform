@@ -15,78 +15,39 @@ export default function Layout() {
   const { user, logout } = useAuth();
 
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        background: "#f5f7fb",
-        color: "#14213d",
-        fontFamily: "Arial, sans-serif",
-      }}
-    >
-      <header
-        style={{
-          background: "#1d3557",
-          color: "white",
-          padding: "1rem 2rem",
-          boxShadow: "0 1px 4px rgba(0,0,0,0.1)",
-        }}
-      >
-        <div
-          style={{
-            maxWidth: 1200,
-            margin: "0 auto",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: "1rem",
-            flexWrap: "wrap",
-          }}
-        >
+    <div className="min-h-screen bg-gray-100 text-gray-900">
+      <header className="bg-blue-900 text-white shadow-sm">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex items-center justify-between gap-4 flex-wrap">
           <div>
-            <strong style={{ fontSize: "1.5rem" }}>
+            <strong className="text-xl sm:text-2xl">
               Riverside Community Hub
             </strong>
           </div>
 
-          <nav style={{ display: "flex", gap: "0.9rem", flexWrap: "wrap" }}>
+          <nav className="flex gap-3 sm:gap-4 flex-wrap">
             {navItems.map((item) => (
               <NavLink
                 key={item.to}
                 to={item.to}
-                style={({ isActive }) => ({
-                  color: isActive ? "#ffd166" : "white",
-                  textDecoration: "none",
-                  fontWeight: 600,
-                })}
+                className={({ isActive }) =>
+                  `font-semibold no-underline transition-colors ${
+                    isActive ? "text-yellow-300" : "text-white hover:text-gray-200"
+                  }`
+                }
               >
                 {item.label}
               </NavLink>
             ))}
           </nav>
 
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "0.75rem",
-              flexWrap: "wrap",
-            }}
-          >
+          <div className="flex items-center gap-3 flex-wrap">
             {user ? (
               <>
-                <span>Hi, {user.fullName}</span>
+                <span className="text-sm sm:text-base">Hi, {user.fullName}</span>
                 <button
                   type="button"
                   onClick={logout}
-                  style={{
-                    background: "#e63946",
-                    color: "white",
-                    border: "none",
-                    borderRadius: 8,
-                    padding: "0.6rem 1rem",
-                    fontWeight: 700,
-                    cursor: "pointer",
-                  }}
+                  className="bg-red-600 text-white border-none rounded-lg px-4 py-2 font-semibold hover:bg-red-700 transition-colors"
                 >
                   Logout
                 </button>
@@ -95,21 +56,13 @@ export default function Layout() {
               <>
                 <NavLink
                   to="/login"
-                  style={{
-                    color: "white",
-                    textDecoration: "none",
-                    fontWeight: 700,
-                  }}
+                  className="text-white no-underline font-semibold hover:text-gray-200"
                 >
                   Login
                 </NavLink>
                 <NavLink
                   to="/register"
-                  style={{
-                    color: "white",
-                    textDecoration: "none",
-                    fontWeight: 700,
-                  }}
+                  className="text-white no-underline font-semibold hover:text-gray-200"
                 >
                   Register
                 </NavLink>
@@ -119,11 +72,10 @@ export default function Layout() {
         </div>
       </header>
 
-      <main
-        style={{ maxWidth: 1200, margin: "0 auto", padding: "2rem 1rem 3rem" }}
-      >
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <Outlet />
       </main>
     </div>
   );
 }
+
