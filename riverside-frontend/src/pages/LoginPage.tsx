@@ -29,63 +29,37 @@ export default function LoginPage() {
   };
 
   return (
-    <div
-      style={{
-        maxWidth: 520,
-        margin: "0 auto",
-        background: "white",
-        borderRadius: 20,
-        padding: "5rem",
-        boxShadow: "0 10px 30px rgba(0,0,0,0.05)",
-      }}
-    >
-      <h1 style={{
-        marginTop: 0,
-        textAlign: "center" }}>Log in</h1>
-      {error ? <p style={{ textAlign: "center", color: "red" }} role="alert">{error}</p> : null}
-      <form onSubmit={handleSubmit} style={{ display: "grid", gap: "1rem" }}>
+    <div className="max-w-lg mx-auto bg-white rounded-2xl p-6 sm:p-8 shadow-sm">
+      <h1 className="text-2xl font-bold text-center mb-4">Log in</h1>
+      {error ? <p className="text-center text-red-600 mb-4" role="alert">{error}</p> : null}
+      <form onSubmit={handleSubmit} className="flex flex-col gap-4">
         <input
           type="email"
           value={email}
           onChange={(event) => setEmail(event.target.value)}
           placeholder="Email address"
-          style={{
-            padding: "0.85rem",
-            borderRadius: 10,
-            border: "1px solid #cbd5e1",
-          }}
+          className="w-full px-3 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
         <input
           type="password"
           value={password}
           onChange={(event) => setPassword(event.target.value)}
           placeholder="Password"
-          style={{
-            padding: "0.85rem",
-            borderRadius: 10,
-            border: "1px solid #cbd5e1",
-          }}
+          className="w-full px-3 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
         <button
           type="submit"
           disabled={submitting}
-          style={{
-            background: "#1d3557",
-            color: "white",
-            border: "none",
-            borderRadius: 10,
-            padding: "0.9rem",
-            fontWeight: 800,
-            cursor: "pointer",
-          }}
+          className="bg-blue-900 text-white rounded-lg py-3 font-bold hover:bg-blue-800 transition-colors disabled:opacity-50"
         >
           {submitting ? "Signing in..." : "Sign in"}
         </button>
       </form>
 
-      <p style={{ marginTop: "1rem" }}>
-        Need an account? <Link to="/register">Register</Link>
+      <p className="mt-4 text-center">
+        Need an account? <Link to="/register" className="text-blue-700 hover:underline font-semibold">Register</Link>
       </p>
     </div>
   );
 }
+

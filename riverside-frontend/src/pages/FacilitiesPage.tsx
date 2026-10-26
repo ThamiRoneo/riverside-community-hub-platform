@@ -33,20 +33,15 @@ export default function FacilitiesPage() {
 
   return (
     <div>
-      <h1>Rooms &amp; Equipment</h1>
+      <h1 className="text-3xl font-bold mb-6">Rooms &amp; Equipment</h1>
 
       <form
         role="search"
         aria-label="Filter resources"
         onSubmit={(event) => event.preventDefault()}
-        style={{
-          display: "flex",
-          flexWrap: "wrap",
-          gap: "0.75rem",
-          marginBottom: "1.5rem",
-        }}
+        className="flex flex-wrap gap-4 mb-6"
       >
-        <label htmlFor="resource-search" style={labelStyle}>
+        <label htmlFor="resource-search" className="flex flex-col gap-1 text-sm font-semibold">
           Search
           <input
             id="resource-search"
@@ -54,17 +49,17 @@ export default function FacilitiesPage() {
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             placeholder="Boardroom, gym…"
-            style={inputStyle}
+            className="px-3 py-2 border border-gray-300 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
         </label>
 
-        <label htmlFor="resource-type" style={labelStyle}>
+        <label htmlFor="resource-type" className="flex flex-col gap-1 text-sm font-semibold">
           Type
           <select
             id="resource-type"
             value={type}
             onChange={(event) => setType(event.target.value as ResourceType | "")}
-            style={inputStyle}
+            className="px-3 py-2 border border-gray-300 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-blue-500"
           >
             {FILTERS.map((filter) => (
               <option key={filter.value} value={filter.value}>
@@ -74,7 +69,7 @@ export default function FacilitiesPage() {
           </select>
         </label>
 
-        <label htmlFor="resource-capacity" style={labelStyle}>
+        <label htmlFor="resource-capacity" className="flex flex-col gap-1 text-sm font-semibold">
           Minimum capacity
           <input
             id="resource-capacity"
@@ -82,12 +77,12 @@ export default function FacilitiesPage() {
             min={1}
             value={capacityMin}
             onChange={(event) => setCapacityMin(event.target.value)}
-            style={inputStyle}
+            className="px-3 py-2 border border-gray-300 rounded-lg text-base focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
         </label>
       </form>
 
-      <p aria-live="polite" role="status">
+      <p aria-live="polite" role="status" className="mb-4">
         {status === "loading" ? "Loading resources…" : null}
         {status === "error" ? "Unable to load resources." : null}
         {status === "ready" && resources.length === 0
@@ -95,42 +90,33 @@ export default function FacilitiesPage() {
           : null}
       </p>
 
-      <ul
-        style={{
-          listStyle: "none",
-          margin: 0,
-          padding: 0,
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
-          gap: "1.5rem",
-        }}
-      >
+      <ul className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 list-none m-0 p-0">
         {resources.map((resource) => (
-          <li key={resource.id} style={cardStyle}>
-            <div style={cardHeaderStyle}>
-              <h2 style={{ margin: 0, fontSize: "1.1rem" }}>{resource.name}</h2>
-              <span style={badgeStyle}>
+          <li key={resource.id} className="bg-white rounded-xl p-5 shadow-sm">
+            <div className="flex justify-between items-start gap-4 mb-2">
+              <h2 className="m-0 text-lg font-bold">{resource.name}</h2>
+              <span className="bg-green-100 text-gray-800 px-3 py-1 rounded-full text-xs font-bold whitespace-nowrap">
                 {resource.type === "room" ? "Room" : "Equipment"}
               </span>
             </div>
 
-            <p>{resource.description ?? "Part of the Riverside community hub."}</p>
+            <p className="text-gray-700 mb-2">{resource.description ?? "Part of the Riverside community hub."}</p>
 
             {resource.capacity ? (
-              <p>
+              <p className="text-sm text-gray-700">
                 <strong>Capacity:</strong> {resource.capacity}
               </p>
             ) : null}
 
             {resource.hourly_rate ? (
-              <p>
+              <p className="text-sm text-gray-700">
                 <strong>Rate:</strong> R{resource.hourly_rate}/hr
               </p>
             ) : null}
 
             <button
               type="button"
-              style={buttonStyle}
+              className="mt-4 bg-blue-900 text-white border-none rounded-lg px-4 py-2 font-bold hover:bg-blue-800 transition-colors"
               aria-label={`Book ${resource.name}`}
             >
               Book now
@@ -141,54 +127,3 @@ export default function FacilitiesPage() {
     </div>
   );
 }
-
-const labelStyle = {
-  display: "flex",
-  flexDirection: "column" as const,
-  gap: "0.25rem",
-  fontSize: "0.875rem",
-  fontWeight: 600,
-};
-
-const inputStyle = {
-  padding: "0.5rem 0.75rem",
-  borderRadius: 8,
-  border: "1px solid #cbd5e1",
-  fontSize: "0.95rem",
-  fontWeight: 400,
-};
-
-const cardStyle = {
-  background: "white",
-  borderRadius: 16,
-  padding: "1.25rem",
-  boxShadow: "0 8px 20px rgba(0,0,0,0.04)",
-};
-
-const cardHeaderStyle = {
-  display: "flex",
-  justifyContent: "space-between",
-  alignItems: "flex-start",
-  gap: "1rem",
-  marginBottom: "0.5rem",
-};
-
-const badgeStyle = {
-  background: "#dcfce7",
-  color: "#1f2937",
-  padding: "0.35rem 0.7rem",
-  borderRadius: 999,
-  fontSize: "0.8rem",
-  fontWeight: 700,
-  whiteSpace: "nowrap" as const,
-};
-
-const buttonStyle = {
-  background: "#1d3557",
-  color: "white",
-  border: "none",
-  borderRadius: 10,
-  padding: "0.7rem 1rem",
-  fontWeight: 700,
-  cursor: "pointer",
-};
